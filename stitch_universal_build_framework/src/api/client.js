@@ -145,11 +145,31 @@ export const fetchSavedCases = async () => {
   return data.cases || [];
 };
 
-export const saveCase = async ({ name, start_wallet }) => {
+export const saveCase = async ({ name, case_number, start_wallet, anchor_on_chain = true }) => {
   const { data } = await api.post('/cases', {
     name,
+    case_number: case_number ? case_number.trim() : null,
     start_wallet: start_wallet || null,
+    anchor_on_chain: !!anchor_on_chain,
   });
+  return data;
+};
+
+export const retryAnchorCase = async (caseNumber) => {
+  const encodedName = encodeURIComponent(caseNumber);
+  const { data } = await api.post(`/cases/${encodedName}/anchor`);
+  return data;
+};
+
+export const reanchorCase = async (caseNumber) => {
+  const encodedName = encodeURIComponent(caseNumber);
+  const { data } = await api.post(`/cases/${encodedName}/reanchor`);
+  return data;
+};
+
+export const verifyCaseOnChain = async (caseNumber) => {
+  const encodedName = encodeURIComponent(caseNumber);
+  const { data } = await api.get(`/cases/${encodedName}/verify`);
   return data;
 };
 
@@ -169,6 +189,26 @@ export const getReportUrl = (startWallet) => {
   // Use BACKEND_URL (direct to FastAPI) since this is a browser anchor href,
   // not an Axios request through the Vite proxy.
   return `${BACKEND_URL}/report${startWallet ? `?start_wallet=${encodeURIComponent(startWallet)}` : ''}`;
+};
+
+export const publishReport = async (startWallet) => {
+  const body = startWallet ? { start_wallet: startWallet } : {};
+  const { data } = await api.post('/report/publish', body);
+  return data;
+};
+
+export const verifyReport = async ({ file, investigationHash }) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (investigationHash && investigationHash.trim()) {
+    formData.append('investigation_hash', investigationHash.trim());
+  }
+  const { data } = await api.post('/report/verify', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return data;
 };
 
 export default api;

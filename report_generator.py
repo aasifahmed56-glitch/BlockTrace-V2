@@ -1,19 +1,43 @@
+"""
+report_generator.py
+-------------------
+BlockTrace Forensic Investigation Report Generator.
+
+Compiles graph query results from Neo4j into a professional, tamper-evident
+PDF dossier using ReportLab.
+- Dark brown, burnt orange accent, and warm cream styling.
+- Pure vector graphics logo mark (no network access, no external fonts).
+- NumberedCanvas with "Page X of Y" and running headers/footers.
+- Repeatable table headers, zebra striping, and clean typography.
+"""
+
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-
-from logic import (
-    short, risk_tier, compute_wallet_risk, build_narrative, check_sanctions, get_entity_label
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
 )
 
-load_dotenv()
+from logic import (
+    short, risk_tier, compute_wallet_risk, build_narrative, check_sanctions
+)
+from report_theme import (
+    COLOR_PRIMARY_DARK, COLOR_PRIMARY_ACCENT, COLOR_BG_CREAM,
+    COLOR_BORDER, COLOR_SANCTIONED, COLOR_HIGH_RISK,
+    COLOR_MED_RISK, COLOR_LOW_RISK, COLOR_BLUE_ACCENT,
+    COLOR_VIOLET_ACCENT, COLOR_ZEBRA_ROW, COLOR_WHITE,
+    COLOR_TEXT_MUTED, PRINTABLE_WIDTH,
+    BlockTraceNumberedCanvas, build_report_styles,
+    build_header_band, build_kpi_card_row, build_accent_callout,
+    build_section_header, build_styled_table, SectionBlock
+)
+
+load_dotenv(override=True)
 
 NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USER = os.getenv("NEO4J_USER")
@@ -21,16 +45,6 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE")
 
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-
-# BlockTrace brand colors (matching the dashboard/Stitch UI)
-BRAND_ORANGE = colors.HexColor('#FF6D1F')
-BRAND_BLACK = colors.HexColor('#222222')
-BRAND_RED = colors.HexColor('#D62839')
-BRAND_GREEN = colors.HexColor('#4C8C4A')
-BRAND_BLUE = colors.HexColor('#2E6F95')
-BRAND_VIOLET = colors.HexColor('#6B4E8E')
-BRAND_CREAM = colors.HexColor('#F5E7C6')
-BRAND_MUTED = colors.HexColor('#6B6255')
 
 
 def get_summary_stats(session):
@@ -117,111 +131,47 @@ def get_all_wallet_addresses(session):
 
 
 def narrative_to_reportlab_markup(html_text):
-    """build_narrative() in logic.py produces browser-style HTML (<span class='tc-mono'>,
-    <strong>) meant for Streamlit's renderer. ReportLab's Paragraph parser only understands
-    a small, different tag set and has no concept of a 'class' attribute at all — passing
-    the raw narrative HTML straight into a Paragraph raises a parser error. This converts
-    the narrative's specific tags into ReportLab-compatible equivalents."""
+    """Converts browser-style HTML tags from logic.build_narrative into ReportLab markup."""
     text = html_text.replace("<strong>", "<b>").replace("</strong>", "</b>")
     text = re.sub(r"<span class='tc-mono'>", "<font face='Courier'>", text)
     text = text.replace("</span>", "</font>")
     return text
 
 
-def build_table_section(heading_text, heading_style, header_row, data_rows, col_widths, header_bg):
-    """Builds a heading + table as one block so it never splits awkwardly across a page."""
-    heading = Paragraph(heading_text, heading_style)
-    table_data = [header_row] + data_rows
-    t = Table(table_data, colWidths=col_widths)
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), header_bg),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 5),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    return KeepTogether([heading, t])
-
-
-def build_accent_box(heading_text, heading_style, body_flowables, accent_color, bg_color=BRAND_CREAM):
-    """Mimics the dashboard's colored-left-border card using a 2-column table:
-    a thin colored bar in column 0, the actual content in column 1."""
-    content = [Paragraph(heading_text, heading_style)] + body_flowables
-    bar_and_content = Table(
-        [['', content]],
-        colWidths=[0.3 * cm, 16.15 * cm]
-    )
-    bar_and_content.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, 0), accent_color),
-        ('BACKGROUND', (1, 0), (1, 0), bg_color),
-        ('LEFTPADDING', (0, 0), (0, 0), 0),
-        ('RIGHTPADDING', (0, 0), (0, 0), 0),
-        ('TOPPADDING', (0, 0), (0, 0), 0),
-        ('BOTTOMPADDING', (0, 0), (0, 0), 0),
-        ('LEFTPADDING', (1, 0), (1, 0), 14),
-        ('TOPPADDING', (1, 0), (1, 0), 12),
-        ('BOTTOMPADDING', (1, 0), (1, 0), 12),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-    ]))
-    return KeepTogether([bar_and_content])
-
-
-def build_badge_row(badges, styles):
-    """badges: list of (label, value, color) tuples. Renders as a row of colored pill-like cells."""
-    label_style = ParagraphStyle('BadgeLabel', parent=styles['Normal'], fontSize=7,
-                                  textColor=colors.white, alignment=1)
-    value_style = ParagraphStyle('BadgeValue', parent=styles['Normal'], fontSize=13,
-                                  textColor=colors.white, alignment=1, fontName='Helvetica-Bold')
-    cells = []
-    col_widths = []
-    for label, value, color in badges:
-        cell_content = [Paragraph(str(value), value_style), Paragraph(label.upper(), label_style)]
-        cells.append(cell_content)
-        col_widths.append(16.5 * cm / len(badges))
-
-    t = Table([cells], colWidths=col_widths)
-    style_cmds = [
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    ]
-    for i, (_, _, color) in enumerate(badges):
-        style_cmds.append(('BACKGROUND', (i, 0), (i, 0), color))
-    t.setStyle(TableStyle(style_cmds))
-    return t
-
-
 def generate_report(start_wallet, output_path="investigation_report.pdf", certificate_info=None):
-    """certificate_info: optional dict with keys 'certificate_hash', 'previous_hash',
-    'created_at' — if provided, embeds a Certificate of Integrity section at the end."""
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Title'], fontSize=22,
-                                  spaceAfter=2, textColor=BRAND_BLACK, fontName='Helvetica-Bold')
-    subtitle_style = ParagraphStyle('SubtitleStyle', parent=styles['Normal'], fontSize=11,
-                                     textColor=BRAND_ORANGE, spaceAfter=10, fontName='Helvetica-Bold')
-    meta_style = ParagraphStyle('MetaStyle', parent=styles['Normal'], fontSize=9, textColor=BRAND_MUTED)
-    heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=13,
-                                    spaceBefore=16, spaceAfter=8, textColor=BRAND_BLACK)
-    accent_heading_style = ParagraphStyle('AccentHeadingStyle', parent=styles['Heading2'],
-                                           fontSize=13, spaceAfter=6, textColor=BRAND_BLACK)
-    normal_style = styles['Normal']
-    mono_style = ParagraphStyle('Mono', parent=styles['Normal'], fontName='Courier', fontSize=8)
-    signal_style = ParagraphStyle('SignalStyle', parent=styles['Normal'], fontName='Helvetica',
-                                   fontSize=8, textColor=BRAND_MUTED)
-    disclaimer_style = ParagraphStyle('DisclaimerStyle', parent=styles['Normal'], fontSize=8,
-                                       textColor=BRAND_MUTED, italic=True)
+    """Generates the official BlockTrace forensic PDF dossier.
 
-    doc = SimpleDocTemplate(output_path, pagesize=A4,
-                             topMargin=1.8 * cm, bottomMargin=1.8 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    Args:
+        start_wallet: Initial subject/target wallet address.
+        output_path: Path where the generated PDF will be saved.
+        certificate_info: Optional dict with 'certificate_hash', 'previous_hash', 'created_at'.
+    """
+    styles = build_report_styles()
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=A4,
+        topMargin=1.6 * cm,
+        bottomMargin=1.6 * cm,
+        leftMargin=1.8 * cm,
+        rightMargin=1.8 * cm,
+        title="BlockTrace Forensic Investigation Report",
+        author="BlockTrace",
+        subject="Blockchain forensic investigation findings"
+    )
+
     elements = []
 
-    # ---- Branded header ----
-    elements.append(Paragraph("BLOCKTRACE", title_style))
-    elements.append(Paragraph("FORENSIC INVESTIGATION REPORT", subtitle_style))
-    elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", meta_style))
-    elements.append(Paragraph(f"Starting wallet: <font face='Courier'>{start_wallet}</font>", meta_style))
-    elements.append(Spacer(1, 14))
+    # Timestamp
+    gen_time_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Investigation ID (if certified)
+    inv_id = None
+    if certificate_info and certificate_info.get("certificate_hash"):
+        inv_id = certificate_info["certificate_hash"]
+
+    # 1. Header Band & Metadata Block
+    elements.append(build_header_band(start_wallet, gen_time_str, styles, investigation_id=inv_id))
+    elements.append(Spacer(1, 10))
 
     with driver.session(database=NEO4J_DATABASE) as session:
         wallets, txs = get_summary_stats(session)
@@ -233,184 +183,321 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
         all_addresses = get_all_wallet_addresses(session)
         sanctions_matches = check_sanctions(all_addresses)
         sanctioned_set = {addr for addr, _ in sanctions_matches}
-        risk_rows = compute_wallet_risk(hub_data, fanout_data, peel_data, round_data, circular_data,
-                                         sanctioned_addresses=sanctioned_set)
+        risk_rows = compute_wallet_risk(
+            hub_data, fanout_data, peel_data, round_data, circular_data,
+            sanctioned_addresses=sanctioned_set
+        )
 
-        # ---- Summary badge row ----
-        overall_tier_label = "LOW"
-        overall_tier_color = BRAND_GREEN
+        # 2. KPI Cards Row
+        overall_tier_label = "LOW RISK"
+        overall_tier_color = COLOR_LOW_RISK
         if risk_rows:
             top_score = risk_rows[0][2]
             if any(s == "OFAC Sanctioned" for _, signals, _ in risk_rows for s in signals):
-                overall_tier_label, overall_tier_color = "SANCTIONED MATCH", BRAND_RED
+                overall_tier_label, overall_tier_color = "SANCTIONED MATCH", COLOR_SANCTIONED
             elif top_score >= 3:
-                overall_tier_label, overall_tier_color = "HIGH RISK", BRAND_RED
+                overall_tier_label, overall_tier_color = "HIGH RISK", COLOR_HIGH_RISK
             elif top_score == 2:
-                overall_tier_label, overall_tier_color = "MEDIUM RISK", BRAND_ORANGE
+                overall_tier_label, overall_tier_color = "MEDIUM RISK", COLOR_MED_RISK
 
         badges = [
-            ("Overall", overall_tier_label, overall_tier_color),
-            ("Wallets Traced", wallets, BRAND_BLACK),
-            ("Transactions", txs, BRAND_BLACK),
-            ("Flagged Wallets", len(risk_rows), BRAND_BLACK),
+            ("Overall Status", overall_tier_label, overall_tier_color),
+            ("Wallets Traced", wallets, COLOR_PRIMARY_DARK),
+            ("Transactions", txs, COLOR_PRIMARY_DARK),
+            ("Flagged Wallets", len(risk_rows), COLOR_PRIMARY_DARK),
         ]
-        elements.append(build_badge_row(badges, styles))
-        elements.append(Spacer(1, 16))
+        elements.append(build_kpi_card_row(badges, styles))
+        elements.append(Spacer(1, 12))
 
-        # ---- What This Trail Shows (shared narrative logic) ----
+        # 3. What This Trail Shows (Narrative Box)
         narrative_paragraphs = build_narrative(
             start_wallet, wallets, txs, hub_data, fanout_data, peel_data, round_data, circular_data, risk_rows
         )
-        narrative_flowables = [Paragraph(narrative_to_reportlab_markup(p), normal_style) for p in narrative_paragraphs]
-        narrative_flowables.append(Spacer(1, 4))
-        narrative_flowables.append(Paragraph(
+
+        narrative_items = []
+        for p in narrative_paragraphs:
+            cleaned = narrative_to_reportlab_markup(p)
+            bullet_html = f"<font color='{COLOR_PRIMARY_ACCENT.hexval()}'>&#9642;</font>&nbsp; {cleaned}"
+            narrative_items.append(Paragraph(bullet_html, styles['BulletItem']))
+
+        narrative_items.append(Spacer(1, 4))
+        narrative_items.append(Paragraph(
             "These patterns are heuristic indicators derived from public blockchain data, not proof "
             "of wrongdoing. Review by a qualified investigator is recommended before drawing conclusions.",
-            disclaimer_style
+            styles['Disclaimer']
         ))
-        elements.append(build_accent_box("What This Trail Shows", accent_heading_style,
-                                          narrative_flowables, BRAND_ORANGE))
+
+        elements.append(build_accent_callout(
+            "What This Trail Shows", narrative_items,
+            accent_color=COLOR_PRIMARY_ACCENT, bg_color=COLOR_BG_CREAM, styles=styles
+        ))
         elements.append(Spacer(1, 10))
 
-        # ---- Sanctions Screening ----
+        def add_section(title, subtitle, content_flowable, accent_color):
+            hdr = build_section_header(title, subtitle, accent_color=accent_color, styles=styles)
+            if isinstance(content_flowable, Paragraph):
+                elements.append(KeepTogether([hdr, content_flowable]))
+            else:
+                block = SectionBlock(hdr, content_flowable, min_rows=3)
+                elements.append(block)
+            elements.append(Spacer(1, 10))
+
+        # 4. Sanctions Screening
         if sanctions_matches:
-            sanctions_rows = [
-                [Paragraph(addr, mono_style), Paragraph(f"{entry['name']} — {entry['authority']}", signal_style)]
-                for addr, entry in sanctions_matches
-            ]
-            elements.append(build_table_section(
-                "Sanctions Screening", heading_style,
-                ["Wallet Address", "Match Details"], sanctions_rows,
-                [7 * cm, 9.5 * cm], BRAND_RED
-            ))
-        else:
-            elements.append(Paragraph("Sanctions Screening", heading_style))
-            elements.append(Paragraph(
-                "No wallets in this trace matched the verified sanctions list on file.", normal_style
-            ))
-        elements.append(Spacer(1, 10))
+            sanctions_rows = []
+            for addr, entry in sanctions_matches:
+                match_desc = f"<b>{entry.get('name', 'Unknown Entity')}</b> &mdash; {entry.get('authority', 'OFAC SDN')}"
+                sanctions_rows.append([
+                    Paragraph(f"<font face='Courier'>{addr}</font>", styles['TableCellMono']),
+                    Paragraph(match_desc, styles['TableCell'])
+                ])
 
-        # ---- Wallet Risk Overview ----
-        elements.append(Paragraph("Wallet Risk Overview", heading_style))
+            sanctions_content = build_styled_table(
+                ["Wallet Address", "Sanctions Match Details"],
+                sanctions_rows,
+                [8.2 * cm, 9.2 * cm],
+                COLOR_SANCTIONED,
+                styles=styles
+            )
+        else:
+            sanctions_content = Paragraph(
+                "No wallets in this trace matched the built-in sanctions list.",
+                styles['Body']
+            )
+
+        add_section(
+            "Sanctions Screening",
+            "Cross-referencing against the built-in sanctions list.",
+            sanctions_content,
+            COLOR_SANCTIONED
+        )
+
+        # 5. Wallet Risk Overview
         if risk_rows:
-            for wallet, signals, score in risk_rows[:10]:
+            risk_table_rows = []
+            for wallet, signals, score in risk_rows:
                 tier_label, _ = risk_tier(score)
-                tier_color = BRAND_GREEN if tier_label == "Low" else (BRAND_ORANGE if tier_label == "Medium" else BRAND_RED)
+                pill_bg = COLOR_LOW_RISK if tier_label == "Low" else (COLOR_MED_RISK if tier_label == "Medium" else COLOR_HIGH_RISK)
                 if "OFAC Sanctioned" in signals:
-                    tier_color = BRAND_RED
-                row = Table(
-                    [[Paragraph(f"{wallet}<br/><font color='#6B6255' size=7>{' · '.join(signals)}</font>", mono_style),
-                      Paragraph(f"{tier_label.upper()} · {score} signals", ParagraphStyle('TierBadge', fontSize=8, textColor=colors.white, alignment=1))]],
-                    colWidths=[12.5 * cm, 4 * cm]
+                    pill_bg = COLOR_SANCTIONED
+                    tier_label = "SANCTIONED"
+
+                signal_plural = "signal" if score == 1 else "signals"
+                tier_html = f"<font color='{pill_bg.hexval()}'><b>&#9679; {tier_label.upper()}</b></font> ({score} {signal_plural})"
+
+                signals_str = " &bull; ".join(signals)
+
+                wallet_cell = Paragraph(
+                    f"<font face='Courier' size='8'><b>{wallet}</b></font><br/>"
+                    f"<font color='{COLOR_TEXT_MUTED.hexval()}' size='6.5'>{signals_str}</font>",
+                    styles['TableCell']
                 )
-                row.setStyle(TableStyle([
-                    ('BACKGROUND', (1, 0), (1, 0), tier_color),
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                    ('TOPPADDING', (0, 0), (-1, -1), 6),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                    ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#E0D3B0')),
-                ]))
-                elements.append(row)
-                elements.append(Spacer(1, 3))
-        else:
-            elements.append(Paragraph("No wallets triggered any detection signal in this dataset.", normal_style))
-        elements.append(Spacer(1, 10))
+                risk_table_rows.append([wallet_cell, Paragraph(tier_html, styles['TableCellRight'])])
 
-        # ---- Detection technique sections (all 5) ----
-        hub_rows = [[Paragraph(w, mono_style), str(c)] for w, c in hub_data]
+            risk_content = build_styled_table(
+                ["Wallet & Detected Behaviors", "Risk Assessment"],
+                risk_table_rows,
+                [12.4 * cm, 5.0 * cm],
+                COLOR_PRIMARY_DARK,
+                right_cols=[1],
+                styles=styles
+            )
+        else:
+            risk_content = Paragraph(
+                "No wallets triggered any detection signal in this dataset.",
+                styles['Body']
+            )
+
+        add_section(
+            "Wallet Risk Overview",
+            "Composite risk classification based on aggregated behavioral heuristic signals.",
+            risk_content,
+            COLOR_PRIMARY_DARK
+        )
+
+        # 6. Hub Wallets (High Activity)
         if hub_data:
-            elements.append(build_table_section(
-                "Hub Wallets (High Activity)", heading_style,
-                ["Wallet Address", "Total Transactions"], hub_rows,
-                [11 * cm, 5 * cm], BRAND_BLACK
-            ))
+            hub_rows = [
+                [Paragraph(f"<font face='Courier'>{w}</font>", styles['TableCellMono']), str(c)]
+                for w, c in hub_data
+            ]
+            hub_content = build_styled_table(
+                ["Wallet Address", "Total Transactions"],
+                hub_rows,
+                [12.4 * cm, 5.0 * cm],
+                COLOR_PRIMARY_DARK,
+                right_cols=[1],
+                styles=styles
+            )
         else:
-            elements.append(Paragraph("Hub Wallets (High Activity)", heading_style))
-            elements.append(Paragraph("No hub wallets detected.", normal_style))
-        elements.append(Spacer(1, 6))
+            hub_content = Paragraph("No hub wallets detected.", styles['Body'])
 
-        fanout_rows = [[Paragraph(w, mono_style), str(c)] for w, c in fanout_data]
+        add_section(
+            "Hub Wallets (High Activity)",
+            "Addresses exhibiting high transaction frequency and counterparty concentration.",
+            hub_content,
+            COLOR_PRIMARY_DARK
+        )
+
+        # 7. High Fan-Out Wallets
         if fanout_data:
-            elements.append(build_table_section(
-                "High Fan-Out Wallets (Possible Fund Splitting)", heading_style,
-                ["Wallet Address", "Distinct Recipients"], fanout_rows,
-                [11 * cm, 5 * cm], BRAND_RED
-            ))
+            fanout_rows = [
+                [Paragraph(f"<font face='Courier'>{w}</font>", styles['TableCellMono']), str(c)]
+                for w, c in fanout_data
+            ]
+            fanout_content = build_styled_table(
+                ["Wallet Address", "Distinct Recipients"],
+                fanout_rows,
+                [12.4 * cm, 5.0 * cm],
+                COLOR_SANCTIONED,
+                right_cols=[1],
+                styles=styles
+            )
         else:
-            elements.append(Paragraph("High Fan-Out Wallets (Possible Fund Splitting)", heading_style))
-            elements.append(Paragraph("No high fan-out wallets detected.", normal_style))
-        elements.append(Spacer(1, 6))
+            fanout_content = Paragraph("No high fan-out wallets detected.", styles['Body'])
 
+        add_section(
+            "High Fan-Out Wallets (Possible Fund Splitting)",
+            "Addresses distributing funds rapidly to multiple distinct recipient wallets.",
+            fanout_content,
+            COLOR_SANCTIONED
+        )
+
+        # 8. Possible Peel Chains
         if peel_data:
-            peel_rows = [[Paragraph(w, mono_style), f"{m:.4f}", f"{p:.4f}"] for w, m, p in peel_data]
-            elements.append(build_table_section(
-                "Possible Peel Chains (Laundering Pattern)", heading_style,
-                ["Wallet Address", "Main Amount", "Peel Amount"], peel_rows,
-                [9 * cm, 3.5 * cm, 3.5 * cm], BRAND_BLUE
-            ))
+            peel_rows = [
+                [
+                    Paragraph(f"<font face='Courier'>{w}</font>", styles['TableCellMono']),
+                    f"{m:.4f} ETH",
+                    f"{p:.4f} ETH"
+                ]
+                for w, m, p in peel_data
+            ]
+            peel_content = build_styled_table(
+                ["Wallet Address", "Main Amount", "Peel Amount"],
+                peel_rows,
+                [9.4 * cm, 4.0 * cm, 4.0 * cm],
+                COLOR_BLUE_ACCENT,
+                right_cols=[1, 2],
+                styles=styles
+            )
         else:
-            elements.append(Paragraph("Possible Peel Chains (Laundering Pattern)", heading_style))
-            elements.append(Paragraph("No peel chain patterns detected.", normal_style))
-        elements.append(Spacer(1, 6))
+            peel_content = Paragraph("No peel chain patterns detected.", styles['Body'])
 
+        add_section(
+            "Possible Peel Chains (Laundering Pattern)",
+            "Asymmetric transfers where small amounts are peeled off while bulk funds continue.",
+            peel_content,
+            COLOR_BLUE_ACCENT
+        )
+
+        # 9. Round-Number Transactions
         if round_data:
-            round_rows = [[Paragraph(f"{short(f)} → {short(t)}", mono_style), f"{v:.0f}"] for f, t, v in round_data]
-            elements.append(build_table_section(
-                "Round-Number Transactions", heading_style,
-                ["Transaction", "Amount"], round_rows,
-                [11 * cm, 5 * cm], BRAND_ORANGE
-            ))
+            round_rows = [
+                [
+                    Paragraph(f"<font face='Courier'>{short(f)} &rarr; {short(t)}</font>", styles['TableCellMono']),
+                    f"{v:.0f} ETH"
+                ]
+                for f, t, v in round_data
+            ]
+            round_content = build_styled_table(
+                ["Transaction (From &rarr; To)", "Amount"],
+                round_rows,
+                [12.4 * cm, 5.0 * cm],
+                COLOR_PRIMARY_ACCENT,
+                right_cols=[1],
+                styles=styles
+            )
         else:
-            elements.append(Paragraph("Round-Number Transactions", heading_style))
-            elements.append(Paragraph("No round-number transactions detected.", normal_style))
-        elements.append(Spacer(1, 6))
+            round_content = Paragraph("No round-number transactions detected.", styles['Body'])
 
+        add_section(
+            "Round-Number Transactions",
+            "Transfers of whole-integer token amounts, indicative of manual or OTC transactions.",
+            round_content,
+            COLOR_PRIMARY_ACCENT
+        )
+
+        # 10. Circular Flows
         if circular_data:
-            circular_rows = [[Paragraph(w, mono_style), f"{h} hops"] for w, h in circular_data]
-            elements.append(build_table_section(
-                "Circular Flows (Possible Wash Trading)", heading_style,
-                ["Wallet Address", "Loop Length"], circular_rows,
-                [11 * cm, 5 * cm], BRAND_VIOLET
-            ))
+            circular_rows = [
+                [
+                    Paragraph(f"<font face='Courier'>{w}</font>", styles['TableCellMono']),
+                    f"{h} hops"
+                ]
+                for w, h in circular_data
+            ]
+            circular_content = build_styled_table(
+                ["Wallet Address", "Loop Length"],
+                circular_rows,
+                [12.4 * cm, 5.0 * cm],
+                COLOR_VIOLET_ACCENT,
+                right_cols=[1],
+                styles=styles
+            )
         else:
-            elements.append(Paragraph("Circular Flows (Possible Wash Trading)", heading_style))
-            elements.append(Paragraph("No circular flows detected.", normal_style))
+            circular_content = Paragraph("No circular flows detected.", styles['Body'])
 
-        # ---- Certificate of Integrity (optional) ----
+        add_section(
+            "Circular Flows (Possible Wash Trading)",
+            "Closed loops where funds cycle back to the originating address through intermediate hops.",
+            circular_content,
+            COLOR_VIOLET_ACCENT
+        )
+
+        # 11. Certificate of Integrity (if issued)
         if certificate_info:
             cert_flowables = [
                 Paragraph(
                     f"Certificate Hash: <font face='Courier'>{certificate_info['certificate_hash']}</font>",
-                    mono_style
+                    styles['MetaValueCourier']
                 ),
                 Paragraph(
                     f"Previous Hash: <font face='Courier'>{certificate_info['previous_hash']}</font>",
-                    mono_style
+                    styles['MetaValueCourier']
                 ),
-                Paragraph(f"Issued: {certificate_info.get('created_at', 'N/A')}", signal_style),
+                Paragraph(f"Issued: {certificate_info.get('created_at', 'N/A')}", styles['Disclaimer']),
                 Spacer(1, 4),
                 Paragraph(
                     "This report's findings are sealed under the certificate hash above. Anyone can "
                     "independently verify this report has not been altered by recomputing the SHA-256 "
                     "hash of the recorded findings concatenated with the previous hash, and confirming "
-                    "it matches the certificate hash — without needing to trust this document's source.",
-                    signal_style
+                    "it matches the certificate hash &mdash; without needing to trust this document's source.",
+                    styles['Disclaimer']
                 ),
             ]
+            elements.append(build_accent_callout(
+                "Certificate of Integrity", cert_flowables,
+                accent_color=COLOR_PRIMARY_DARK, bg_color=COLOR_BG_CREAM, styles=styles
+            ))
             elements.append(Spacer(1, 10))
-            elements.append(build_accent_box("Certificate of Integrity", accent_heading_style,
-                                              cert_flowables, BRAND_BLACK))
 
-        elements.append(Spacer(1, 16))
+        # 12. Verification Instructions Callout Box
+        verify_flowables = [
+            Paragraph(
+                "After publishing, navigate to the <b>Verify Report</b> page in BlockTrace, upload this exact "
+                "PDF dossier, and enter the corresponding investigation hash. The platform confirms "
+                "byte-for-byte cryptographic authenticity against the immutable record anchored on the "
+                "Ethereum Sepolia testnet.",
+                styles['Body']
+            ),
+        ]
+        elements.append(build_accent_callout(
+            "How to Verify This Report", verify_flowables,
+            accent_color=COLOR_PRIMARY_ACCENT, bg_color=COLOR_BG_CREAM, styles=styles
+        ))
+        elements.append(Spacer(1, 12))
+
+        # 13. Final Disclaimer Paragraph
         elements.append(Paragraph(
             "This report was generated using automated graph-based heuristics (hub detection, "
             "fan-out detection, peel-chain detection, round-number detection, circular-flow detection) "
             "and sanctions-list screening applied to public blockchain transaction data. Findings should "
             "be reviewed by a qualified investigator before use in any formal proceeding.",
-            disclaimer_style
+            styles['Disclaimer']
         ))
 
-    doc.build(elements)
+    doc.build(elements, canvasmaker=BlockTraceNumberedCanvas)
     print(f"Report saved to {output_path}")
 
 

@@ -6,3 +6,5 @@ neo4j
 reportlab
 pytest
 httpx
+web3
+cryptography

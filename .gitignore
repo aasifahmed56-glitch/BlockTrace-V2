@@ -1,9 +1,24 @@
+# Environment & Secrets
 .env
-node_modules/
-__pycache__/
-.pytest_cache/
+*.env
+.env.local
+.env.*.local
+
+# Virtual Environment & Python Caches
 venv/
+env/
+__pycache__/
 *.pyc
+.pytest_cache/
+
+# Dependencies & Build Artefacts
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Case Investigation Snapshots & Generated Reports
 cases/
+*.enc
 investigation_report.pdf
 graph.html

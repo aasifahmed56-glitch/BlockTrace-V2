@@ -1,7 +1,7 @@
 import React from 'react';
 import { useInvestigation } from '../context/InvestigationContext';
 
-export const Header = () => {
+export const Header = ({ onToggleSidebar, isLocked = false, isMobileOpen = false }) => {
   const { summary, sanctions, refreshGraphAndSummary, refreshFindings, isLoadingGraph } = useInvestigation();
 
   const handleRefresh = async () => {
@@ -9,20 +9,42 @@ export const Header = () => {
     await refreshFindings();
   };
 
+  const isExpanded = isLocked || isMobileOpen;
+
   return (
-    <header className="fixed top-0 left-[300px] right-0 h-16 bg-surface/80 backdrop-blur-xl z-40 flex items-center justify-between px-xl border-b border-outline-variant">
-      {/* Search Bar / Quick Lookup */}
-      <div className="flex items-center bg-surface-container-low px-md py-xs rounded-full border border-outline-variant w-96">
-        <span className="material-symbols-outlined text-on-surface-variant mr-sm text-[20px]">
-          search
-        </span>
-        <input
-          className="bg-transparent border-none focus:ring-0 text-body-sm w-full outline-none placeholder:text-on-surface-variant/50 font-address-md text-xs"
-          placeholder="Global search address, tx, or entity..."
-          type="text"
-          readOnly
-          onClick={() => {}}
-        />
+    <header className="fixed top-0 left-0 md:left-[72px] right-0 h-16 bg-surface/80 backdrop-blur-xl z-40 flex items-center justify-between px-md sm:px-xl border-b border-outline-variant">
+      {/* Left: Hamburger / Lock Toggle & Search Bar */}
+      <div className="flex items-center gap-sm sm:gap-md">
+        <button
+          id="sidebar-hamburger-btn"
+          onClick={onToggleSidebar}
+          className={`p-2 rounded-lg transition-all flex items-center justify-center focus:outline-none ${
+            isLocked
+              ? 'bg-primary/20 text-primary'
+              : 'text-on-surface-variant hover:text-white hover:bg-white/10 active:scale-95'
+          }`}
+          title={isLocked ? "Unlock navigation sidebar (restore auto-collapse on hover)" : "Lock navigation sidebar expanded"}
+          aria-label={isLocked ? "Unlock navigation sidebar" : "Lock navigation sidebar expanded"}
+          aria-expanded={isExpanded}
+        >
+          <span className="material-symbols-outlined text-[24px]">
+            {isExpanded ? 'menu_open' : 'menu'}
+          </span>
+        </button>
+
+        {/* Search Bar / Quick Lookup */}
+        <div className="hidden sm:flex items-center bg-surface-container-low px-md py-xs rounded-full border border-outline-variant w-72 md:w-96">
+          <span className="material-symbols-outlined text-on-surface-variant mr-sm text-[20px]">
+            search
+          </span>
+          <input
+            className="bg-transparent border-none focus:ring-0 text-body-sm w-full outline-none placeholder:text-on-surface-variant/50 font-address-md text-xs"
+            placeholder="Global search address, tx, or entity..."
+            type="text"
+            readOnly
+            onClick={() => {}}
+          />
+        </div>
       </div>
 
       {/* Right Actions & Status Badges */}

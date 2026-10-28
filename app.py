@@ -4,6 +4,10 @@ import time
 import hashlib
 import requests
 from dotenv import load_dotenv
+
+# Ensure environment variables from .env strictly override any cached process environment
+load_dotenv(override=True)
+
 from neo4j import GraphDatabase
 from pyvis.network import Network
 import streamlit.components.v1 as components
@@ -13,8 +17,6 @@ from logic import (
     check_sanctions, get_entity_label, compute_certificate_hash, verify_certificate
 )
 import case_manager
-
-load_dotenv()
 
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY")
 NEO4J_URI = os.getenv("NEO4J_URI")
@@ -626,6 +628,7 @@ st.sidebar.markdown("---")
 st.sidebar.header("💼 Investigation Cases")
 st.sidebar.caption("Save the current graph as a named case, or reload one later without re-fetching from the API.")
 
+case_number_input = st.sidebar.text_input("Case number (e.g. BT-2026-0001, optional)", key="case_number_input")
 case_name_input = st.sidebar.text_input("Case name", key="case_name_input")
 if st.sidebar.button("💾 Save Current Case"):
     if case_name_input.strip() == "":
@@ -636,22 +639,30 @@ if st.sidebar.button("💾 Save Current Case"):
             st.sidebar.error("Nothing to save — the graph is empty.")
         else:
             start_addr = new_wallet.strip() if new_wallet.strip() else current_edges[0][0]
-            path = case_manager.save_case(case_name_input.strip(), start_addr, current_edges)
-            st.sidebar.success(f"Saved case '{case_name_input.strip()}' ({len(current_edges)} edges).")
+            try:
+                saved_res = case_manager.save_case(
+                    case_name_input.strip(),
+                    start_addr,
+                    current_edges,
+                    case_number=case_number_input.strip() or None
+                )
+                st.sidebar.success(f"Saved case [{saved_res['case_number']}] '{saved_res['name']}' ({len(current_edges)} edges).")
+            except (ValueError, case_manager.DuplicateCaseNumberError) as err:
+                st.sidebar.error(f"Save failed: {err}")
 
 saved_cases = case_manager.list_cases()
 if saved_cases:
-    case_labels = [f"{name} ({count} edges)" for name, saved_at, count in saved_cases]
+    case_labels = [f"[{c.get('case_number', 'Legacy')}] {c['name']} ({c['edge_count']} edges)" for c in saved_cases]
     selected_case_idx = st.sidebar.selectbox("Load a saved case", range(len(saved_cases)),
                                               format_func=lambda i: case_labels[i])
     if st.sidebar.button("📂 Load Selected Case"):
-        case_data = case_manager.load_case(saved_cases[selected_case_idx][0])
+        case_data = case_manager.load_case(saved_cases[selected_case_idx]["name"])
         if case_data:
             with st.spinner("Clearing current graph and loading saved case..."):
                 clear_graph()
                 load_case_edges(case_data["edges"])
             st.session_state.wallet_input = case_data.get("start_wallet", "")
-            st.sidebar.success(f"Loaded '{case_data['name']}' — {case_data['edge_count']} edges restored.")
+            st.sidebar.success(f"Loaded '[{case_data.get('case_number', 'Legacy')}] {case_data['name']}' — {case_data['edge_count']} edges restored.")
             st.rerun()
 else:
     st.sidebar.caption("No saved cases yet.")
