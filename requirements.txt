@@ -8,3 +8,4 @@ pytest
 httpx
 web3
 cryptography
+python-multipart
