@@ -50,6 +50,6 @@ Files: `msix\AppxManifest.xml` is the manifest template, and `msix\make_assets.p
 the tile images from the PWA icon. `makeappx.exe` comes from Microsoft's
 `Microsoft.Windows.SDK.BuildTools` NuGet package and is cached in `desktop\.tools`.
 
-Requirements: a privacy policy URL (`https://blocktrace-v2.vercel.app/privacy`),
-and, because the backend runs in public mode, an access code given to certification
-reviewers in the "Notes for certification" field.
+Requirements: a privacy policy URL (`https://blocktrace-v2.vercel.app/privacy`).
+In "Notes for certification", mention that the first launch can take up to a minute
+while the hosted backend wakes up.

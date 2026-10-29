@@ -14,9 +14,6 @@ import {
   fetchCircularDetections,
   checkHealth,
   getErrorMessage,
-  isAccessDenied,
-  getAccessCode,
-  setAccessCode as saveAccessCode,
 } from '../api/client';
 
 const InvestigationContext = createContext(null);
@@ -25,18 +22,9 @@ export const InvestigationProvider = ({ children }) => {
   // Navigation
   const [activeTab, setActiveTab] = useState('investigate'); // 'landing' | 'investigate' | 'findings' | 'certificates' | 'cases-reports'
 
-  // Public mode state
-  const [publicMode, setPublicMode] = useState(false);
-  const [accessCode, setAccessCodeState] = useState(getAccessCode());
+  // Server state
   const [serverWaking, setServerWaking] = useState(false);
   const [serverReady, setServerReady] = useState(false);
-
-  const isLocked = publicMode && !accessCode;
-
-  const setAccessCode = useCallback((code) => {
-    saveAccessCode(code);
-    setAccessCodeState(code);
-  }, []);
 
   // Core Data
   const [chains, setChains] = useState(['Ethereum', 'BNB Smart Chain', 'Polygon']);
@@ -91,9 +79,8 @@ export const InvestigationProvider = ({ children }) => {
 
     const doHealthCheck = async () => {
       try {
-        const data = await checkHealth();
+        await checkHealth();
         if (!cancelled) {
-          setPublicMode(data.public_mode === true);
           setServerReady(true);
           setServerWaking(false);
         }
@@ -101,9 +88,8 @@ export const InvestigationProvider = ({ children }) => {
         // Retry once on network failure (Render cold start)
         if (!cancelled) {
           try {
-            const data = await checkHealth();
+            await checkHealth();
             if (!cancelled) {
-              setPublicMode(data.public_mode === true);
               setServerReady(true);
               setServerWaking(false);
             }
@@ -124,19 +110,6 @@ export const InvestigationProvider = ({ children }) => {
     };
   }, []);
 
-  // ==================== Handle 401 errors globally ====================
-  const handle401 = useCallback((err) => {
-    if (isAccessDenied(err)) {
-      showToast(
-        'Access restricted. Enter your access code to unlock the full workspace.',
-        'warning',
-        6000,
-      );
-      return true;
-    }
-    return false;
-  }, [showToast]);
-
   // Fetch initial setup (chains & curated cases)
   useEffect(() => {
     const initSetup = async () => {
@@ -152,14 +125,11 @@ export const InvestigationProvider = ({ children }) => {
           setCuratedCases(caseList.value);
         }
       } catch (err) {
-        // In public mode without code, chains/curated-cases will 401 — that's expected
-        if (!handle401(err)) {
-          console.error('Failed to initialize metadata:', err);
-        }
+        console.error('Failed to initialize metadata:', err);
       }
     };
     initSetup();
-  }, [handle401]);
+  }, []);
 
   // Refresh graph and summary
   const refreshGraphAndSummary = useCallback(async () => {
@@ -178,14 +148,12 @@ export const InvestigationProvider = ({ children }) => {
       }
       return graphEdges;
     } catch (err) {
-      if (!handle401(err)) {
-        console.error('Error fetching graph/summary:', err);
-        showToast(getErrorMessage(err), 'error');
-      }
+      console.error('Error fetching graph/summary:', err);
+      showToast(getErrorMessage(err), 'error');
     } finally {
       setIsLoadingGraph(false);
     }
-  }, [showToast, handle401]);
+  }, [showToast]);
 
   // Refresh all findings data
   const refreshFindings = useCallback(async (customStartWallet) => {
@@ -234,13 +202,11 @@ export const InvestigationProvider = ({ children }) => {
       });
       setEntityLabels(labelsMap);
     } catch (err) {
-      if (!handle401(err)) {
-        console.error('Error fetching findings:', err);
-      }
+      console.error('Error fetching findings:', err);
     } finally {
       setIsLoadingFindings(false);
     }
-  }, [startWallet, edges, handle401]);
+  }, [startWallet, edges]);
 
   // Load everything on initial app mount
   useEffect(() => {
@@ -295,14 +261,8 @@ export const InvestigationProvider = ({ children }) => {
     removeToast,
     refreshGraphAndSummary,
     refreshFindings,
-    // Public mode
-    publicMode,
-    accessCode,
-    setAccessCode,
-    isPublicLocked: isLocked,
     serverWaking,
     serverReady,
-    handle401,
   };
 
   return (

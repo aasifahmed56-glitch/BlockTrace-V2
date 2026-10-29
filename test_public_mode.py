@@ -1,37 +1,29 @@
 """
-Tests for Phase 2 — public deployment mode: access code auth, rate limiting,
-public endpoints (/health, /contracts, /sanctions/check), and protected endpoints.
+Tests for public deployment mode: open endpoints (no access code), rate limiting,
+and the tighter budget on endpoints that spend Sepolia gas / Pinata storage.
 
-Uses FastAPI TestClient and unittest.mock.patch to toggle PUBLIC_MODE/ACCESS_CODE
-without touching real environment variables.
+Uses FastAPI TestClient and patches module-level flags directly instead of
+touching real environment variables. Avoids /clear and other destructive or
+on-chain endpoints, since the tests run against the configured Neo4j database.
 """
 
-import time
 import pytest
-from unittest.mock import patch
 
 
 # ============================================================
 # Helpers: create test clients with specific mode settings
 # ============================================================
 
-def _make_app(public_mode=False, access_code=""):
+def _make_app(public_mode=False):
     """Import and reconfigure the FastAPI app with mocked mode settings."""
-    with patch.dict("os.environ", {
-        "PUBLIC_MODE": "true" if public_mode else "false",
-        "ACCESS_CODE": access_code,
-    }):
-        # Re-import to pick up patched env vars at module level
-        import importlib
-        import api as api_module
-        # Patch the module-level flags directly (they're read at import time)
-        api_module.PUBLIC_MODE = public_mode
-        api_module.ACCESS_CODE = access_code
-        # Clear rate limit store between tests
-        api_module._rate_limit_store.clear()
+    import api as api_module
+    # Patch the module-level flag directly (it's read at import time)
+    api_module.PUBLIC_MODE = public_mode
+    # Clear rate limit store between tests
+    api_module._rate_limit_store.clear()
 
-        from fastapi.testclient import TestClient
-        return TestClient(api_module.app), api_module
+    from fastapi.testclient import TestClient
+    return TestClient(api_module.app), api_module
 
 
 # ============================================================
@@ -40,18 +32,12 @@ def _make_app(public_mode=False, access_code=""):
 
 class TestHealthEndpoint:
     def test_health_returns_ok(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
+        client, _ = _make_app(public_mode=True)
         resp = client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
         assert data["public_mode"] is True
-
-    def test_health_no_code_needed(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        # No X-Access-Code header — should still work
-        resp = client.get("/health")
-        assert resp.status_code == 200
 
     def test_health_local_mode(self):
         client, _ = _make_app(public_mode=False)
@@ -66,7 +52,7 @@ class TestHealthEndpoint:
 
 class TestContractsEndpoint:
     def test_contracts_returns_addresses(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
+        client, _ = _make_app(public_mode=True)
         resp = client.get("/contracts")
         assert resp.status_code == 200
         data = resp.json()
@@ -82,7 +68,7 @@ class TestContractsEndpoint:
 
 class TestSanctionsCheckEndpoint:
     def test_sanctioned_address(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
+        client, _ = _make_app(public_mode=True)
         resp = client.get("/sanctions/check", params={
             "address": "0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
         })
@@ -115,14 +101,6 @@ class TestSanctionsCheckEndpoint:
         })
         assert resp.status_code == 400
 
-    def test_no_code_needed(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        # No X-Access-Code — public endpoint
-        resp = client.get("/sanctions/check", params={
-            "address": "0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
-        })
-        assert resp.status_code == 200
-
     def test_case_insensitive(self):
         client, _ = _make_app()
         resp_lower = client.get("/sanctions/check", params={
@@ -136,109 +114,93 @@ class TestSanctionsCheckEndpoint:
 
 
 # ============================================================
-# 4. Protected endpoints return 401 in public mode without code
+# 4. Workspace endpoints are open in public mode (no access code)
 # ============================================================
 
-class TestProtectedEndpoints:
-    def test_clear_requires_code_in_public_mode(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.post("/clear")
-        assert resp.status_code == 401
-        assert "Access code required" in resp.json()["detail"]
-
-    def test_clear_works_with_correct_code(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.post("/clear", headers={"X-Access-Code": "secret123"})
-        # Will either be 200 (if Neo4j connected) or 500 (if not), but NOT 401
+class TestOpenWorkspace:
+    @pytest.mark.parametrize("path", ["/chains", "/curated-cases", "/summary", "/graph", "/cases"])
+    def test_read_endpoints_open_in_public_mode(self, path):
+        client, _ = _make_app(public_mode=True)
+        resp = client.get(path)
+        # 200 when Neo4j is reachable; never 401 now that the access code is gone
         assert resp.status_code != 401
 
-    def test_clear_rejects_wrong_code(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.post("/clear", headers={"X-Access-Code": "wrong"})
-        assert resp.status_code == 401
+    def test_access_code_header_is_ignored(self):
+        client, _ = _make_app(public_mode=True)
+        resp = client.get("/chains", headers={"X-Access-Code": "anything"})
+        assert resp.status_code == 200
 
-    def test_summary_requires_code(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.get("/summary")
-        assert resp.status_code == 401
-
-    def test_cases_list_requires_code(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.get("/cases")
-        assert resp.status_code == 401
-
-    def test_graph_requires_code(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.get("/graph")
-        assert resp.status_code == 401
-
-    def test_expand_requires_code(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.post("/expand", json={"wallet": "0x0000000000000000000000000000000000000001"})
-        assert resp.status_code == 401
-
-    def test_report_requires_code(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        resp = client.get("/report")
-        assert resp.status_code == 401
+    def test_report_verify_open(self):
+        client, _ = _make_app(public_mode=True)
+        # POST without file — should get 422 (validation error), not 401
+        resp = client.post("/report/verify")
+        assert resp.status_code == 422
 
 
 # ============================================================
-# 5. Local mode: everything works without a code
-# ============================================================
-
-class TestLocalMode:
-    def test_clear_no_code_needed(self):
-        client, _ = _make_app(public_mode=False)
-        resp = client.post("/clear")
-        # Won't be 401 — might be 500 if Neo4j isn't running, but that's fine
-        assert resp.status_code != 401
-
-    def test_summary_no_code_needed(self):
-        client, _ = _make_app(public_mode=False)
-        resp = client.get("/summary")
-        assert resp.status_code != 401
-
-    def test_cases_list_no_code_needed(self):
-        client, _ = _make_app(public_mode=False)
-        resp = client.get("/cases")
-        assert resp.status_code != 401
-
-
-# ============================================================
-# 6. Rate limiting
+# 5. Rate limiting
 # ============================================================
 
 class TestRateLimiting:
-    def test_rate_limit_enforced_on_public_endpoints(self):
-        client, mod = _make_app(public_mode=True, access_code="secret123")
-        mod._rate_limit_store.clear()
-        # Make RATE_LIMIT requests — all should succeed
-        for i in range(30):
-            resp = client.get("/health")
+    def test_rate_limit_enforced_on_all_endpoints(self):
+        client, mod = _make_app(public_mode=True)
+        for i in range(mod.RATE_LIMIT):
+            resp = client.get("/contracts")
             assert resp.status_code == 200, f"Request {i+1} failed with {resp.status_code}"
-        # 31st request should be rate-limited
-        resp = client.get("/health")
+        resp = client.get("/contracts")
         assert resp.status_code == 429
         assert "Too many requests" in resp.json()["detail"]
 
+    def test_health_exempt_from_rate_limit(self):
+        # The frontend pings /health to wake the server; it must never be throttled.
+        client, mod = _make_app(public_mode=True)
+        for _ in range(mod.RATE_LIMIT + 5):
+            assert client.get("/health").status_code == 200
+
     def test_rate_limit_not_enforced_in_local_mode(self):
         client, mod = _make_app(public_mode=False)
-        mod._rate_limit_store.clear()
-        # Even 35 requests should succeed
-        for i in range(35):
-            resp = client.get("/health")
-            assert resp.status_code == 200
+        for _ in range(mod.RATE_LIMIT + 5):
+            assert client.get("/contracts").status_code == 200
+
+    def test_clients_get_separate_buckets(self):
+        client, mod = _make_app(public_mode=True)
+        for _ in range(mod.RATE_LIMIT):
+            client.get("/contracts", headers={"CF-Connecting-IP": "1.1.1.1"})
+        assert client.get("/contracts", headers={"CF-Connecting-IP": "1.1.1.1"}).status_code == 429
+        assert client.get("/contracts", headers={"CF-Connecting-IP": "2.2.2.2"}).status_code == 200
+        assert client.get("/contracts", headers={"X-Forwarded-For": "3.3.3.3, 10.0.0.1"}).status_code == 200
 
 
 # ============================================================
-# 7. /report/verify is public (no access code needed)
+# 6. On-chain endpoints have a tighter budget
 # ============================================================
 
-class TestReportVerifyPublic:
-    def test_report_verify_no_code_needed(self):
-        client, _ = _make_app(public_mode=True, access_code="secret123")
-        # POST without file — should get 422 (validation error), not 401
-        resp = client.post("/report/verify")
-        assert resp.status_code != 401  # 422 expected (missing file)
+class TestOnchainRateLimit:
+    @pytest.fixture
+    def no_onchain_budget(self):
+        # A zero budget blocks the request in middleware, so the handler (which
+        # would spend gas and upload to Pinata) never runs.
+        import api as api_module
+        original = api_module.ONCHAIN_RATE_LIMIT
+        api_module.ONCHAIN_RATE_LIMIT = 0
+        yield
+        api_module.ONCHAIN_RATE_LIMIT = original
 
+    @pytest.mark.parametrize("path", [
+        "/report/publish",
+        "/cases/BT-2026-0001/anchor",
+        "/api/cases/BT-2026-0001/anchor",
+        "/cases/BT-2026-0001/reanchor",
+    ])
+    def test_onchain_paths_use_onchain_budget(self, no_onchain_budget, path):
+        client, _ = _make_app(public_mode=True)
+        resp = client.post(path, json={})
+        assert resp.status_code == 429
+        assert resp.headers["Retry-After"] == "3600"
+
+    def test_onchain_pattern_only_matches_writes(self):
+        _, mod = _make_app(public_mode=True)
+        assert mod._ONCHAIN_PATH.match("/report/publish")
+        assert not mod._ONCHAIN_PATH.match("/report")
+        assert not mod._ONCHAIN_PATH.match("/report/verify")
+        assert not mod._ONCHAIN_PATH.match("/cases/BT-2026-0001/verify")

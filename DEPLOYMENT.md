@@ -40,7 +40,6 @@ Set these in Render's Environment tab (values are secrets — names only listed 
 | Variable              | Description                                    |
 |-----------------------|------------------------------------------------|
 | `PUBLIC_MODE`         | Set to `true`                                  |
-| `ACCESS_CODE`         | Strong secret for protected endpoints          |
 | `CORS_ORIGINS`        | `https://blocktrace-v2.vercel.app`             |
 | `NEO4J_URI`           | Neo4j Aura connection URI                      |
 | `NEO4J_USER`          | Neo4j username                                 |
@@ -59,9 +58,10 @@ Set these in Render's Environment tab (values are secrets — names only listed 
 | `WALLET_PRIVATE_KEY`  | Sepolia wallet key for on-chain transactions   |
 | `CASE_ENCRYPTION_KEY` | AES-256 key for case snapshot encryption       |
 
-> **Note**: Leave the three optional variables **unset** for a read-only public host.
-> Set them **only** with a strong `ACCESS_CODE` on demo day — they enable
-> report publishing, case anchoring, and encrypted case storage.
+> **Note**: These enable report publishing, case anchoring, and encrypted case storage.
+> The API has no login, so anyone can trigger them; per-IP rate limits (below) cap how
+> fast the Sepolia wallet and Pinata quota can be spent. Leave them unset for a host
+> without on-chain features. `ACCESS_CODE` is no longer used and can be deleted from Render.
 
 ### Important: Ephemeral Filesystem
 
@@ -107,22 +107,16 @@ up to 3.12/3.13.
 
 When `PUBLIC_MODE=true`:
 
-### Public endpoints (no access code needed)
-- `GET /health` — Wake-up / health check
-- `GET /contracts` — Smart contract addresses (no secrets)
-- `GET /sanctions/check?address=0x...` — Sanctions screening
-- `POST /report/verify` — PDF report verification
+All endpoints are open; there is no access code. Public mode adds:
 
-### Protected endpoints (require `X-Access-Code` header)
-All other endpoints (investigation, findings, cases, certificates, reports).
-Returns `401` with message: *"Access code required. Enter your access code to use the full workspace."*
-
-### Security features in public mode
-- Rate limiting: ~30 requests/minute/IP on public endpoints
+- Rate limiting: 120 requests/minute per client IP on every endpoint except `/health`
+- On-chain budget: 5 requests/hour per IP for `POST /report/publish` and
+  `POST /cases/{case_number}/anchor|reanchor` (these spend Sepolia gas and Pinata storage)
 - Generic error messages (no stack traces exposed)
 - CORS restricted to `CORS_ORIGINS` value
-- Access code compared with `hmac.compare_digest` (timing-safe)
 - Secrets never logged or returned in any response
+
+Limits return `429` with a `Retry-After` header.
 
 ---
 
@@ -137,11 +131,11 @@ curl.exe https://blocktrace-v2.onrender.com/health
 # 2. Sanctions check (should return {"sanctioned":true, ...})
 curl.exe "https://blocktrace-v2.onrender.com/sanctions/check?address=0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
 
-# 3. Protected endpoint without code (should return 401)
-curl.exe -X POST https://blocktrace-v2.onrender.com/clear
+# 3. Workspace endpoint, no login needed (should return {"chains":[...]})
+curl.exe https://blocktrace-v2.onrender.com/chains
 
-# 4. Protected endpoint with code (should return {"status":"cleared"})
-curl.exe -X POST -H "X-Access-Code: YOUR_ACCESS_CODE_HERE" https://blocktrace-v2.onrender.com/clear
+# 4. Graph endpoint (should return 200 with the current edges)
+curl.exe https://blocktrace-v2.onrender.com/graph
 
 # 5. Frontend loads
 curl.exe -s -o NUL -w "%{http_code}" https://blocktrace-v2.vercel.app

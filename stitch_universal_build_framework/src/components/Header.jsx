@@ -1,33 +1,15 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useInvestigation } from '../context/InvestigationContext';
 
 export const Header = ({ onToggleSidebar, isLocked = false, isMobileOpen = false }) => {
   const {
     summary, sanctions, refreshGraphAndSummary, refreshFindings, isLoadingGraph,
-    publicMode, isPublicLocked, accessCode, setAccessCode, serverWaking,
+    serverWaking,
   } = useInvestigation();
-
-  const [showCodeInput, setShowCodeInput] = useState(false);
-  const [codeValue, setCodeValue] = useState('');
 
   const handleRefresh = async () => {
     await refreshGraphAndSummary();
     await refreshFindings();
-  };
-
-  const handleUnlock = () => {
-    if (codeValue.trim()) {
-      setAccessCode(codeValue.trim());
-      setShowCodeInput(false);
-      setCodeValue('');
-      // Reload page to re-fetch all data with the new code
-      window.location.reload();
-    }
-  };
-
-  const handleLock = () => {
-    setAccessCode('');
-    window.location.reload();
   };
 
   const isExpanded = isLocked || isMobileOpen;
@@ -42,56 +24,7 @@ export const Header = ({ onToggleSidebar, isLocked = false, isMobileOpen = false
         </div>
       )}
 
-      {/* Public mode locked banner */}
-      {isPublicLocked && !serverWaking && (
-        <div className="fixed top-0 left-0 md:left-[72px] right-0 z-[55] bg-amber-600/90 text-white text-center py-1.5 text-xs font-medium backdrop-blur-sm flex items-center justify-center gap-2">
-          <span className="material-symbols-outlined text-[16px]">search</span>
-          Public demo mode: report verification only
-          <button
-            onClick={() => setShowCodeInput(true)}
-            className="ml-2 px-2.5 py-0.5 bg-white/20 hover:bg-white/30 rounded text-xs font-bold transition-colors"
-          >
-            Unlock full workspace
-          </button>
-        </div>
-      )}
-
-      {/* Access code modal */}
-      {showCodeInput && (
-        <div className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-center justify-center">
-          <div className="bg-surface-container rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl border border-outline-variant">
-            <h3 className="text-lg font-bold text-on-surface mb-2">Unlock Full Workspace</h3>
-            <p className="text-sm text-on-surface-variant mb-4">
-              Enter the access code to use investigation, findings, and case management features.
-            </p>
-            <input
-              type="password"
-              value={codeValue}
-              onChange={(e) => setCodeValue(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
-              placeholder="Access code"
-              className="w-full px-3 py-2 bg-surface rounded-lg border border-outline-variant text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary mb-3"
-              autoFocus
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleUnlock}
-                className="flex-1 px-4 py-2 bg-primary text-on-primary rounded-lg font-medium hover:bg-primary/90 transition-colors"
-              >
-                Unlock
-              </button>
-              <button
-                onClick={() => { setShowCodeInput(false); setCodeValue(''); }}
-                className="px-4 py-2 bg-surface-container-high text-on-surface rounded-lg font-medium hover:bg-surface-container-highest transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <header className={`fixed ${isPublicLocked && !serverWaking ? 'top-[30px]' : serverWaking ? 'top-[36px]' : 'top-0'} left-0 md:left-[72px] right-0 h-16 bg-surface/80 backdrop-blur-xl z-40 flex items-center justify-between px-md sm:px-xl border-b border-outline-variant transition-[top] duration-300`}>
+      <header className={`fixed ${serverWaking ? 'top-[36px]' : 'top-0'} left-0 md:left-[72px] right-0 h-16 bg-surface/80 backdrop-blur-xl z-40 flex items-center justify-between px-md sm:px-xl border-b border-outline-variant transition-[top] duration-300`}>
         {/* Left: Hamburger / Lock Toggle & Search Bar */}
         <div className="flex items-center gap-sm sm:gap-md">
           <button
@@ -144,28 +77,6 @@ export const Header = ({ onToggleSidebar, isLocked = false, isMobileOpen = false
                 {sanctions.length} Sanctioned Hit{sanctions.length > 1 ? 's' : ''}
               </span>
             </div>
-          )}
-
-          {/* Unlock/Lock badge for public mode */}
-          {publicMode && accessCode && (
-            <button
-              onClick={handleLock}
-              className="flex items-center gap-1 bg-green-500/10 text-green-400 px-2.5 py-1 rounded-full border border-green-500/30 text-xs font-bold hover:bg-green-500/20 transition-colors"
-              title="Click to lock workspace"
-            >
-              <span className="material-symbols-outlined text-[14px]">lock_open</span>
-              Unlocked
-            </button>
-          )}
-          {isPublicLocked && (
-            <button
-              onClick={() => setShowCodeInput(true)}
-              className="flex items-center gap-1 bg-amber-500/10 text-amber-400 px-2.5 py-1 rounded-full border border-amber-500/30 text-xs font-bold hover:bg-amber-500/20 transition-colors"
-              title="Click to unlock workspace"
-            >
-              <span className="material-symbols-outlined text-[14px]">lock</span>
-              Locked
-            </button>
           )}
 
           {/* Refresh button */}
