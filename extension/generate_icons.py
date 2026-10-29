@@ -105,3 +105,4 @@ def draw_promo_tile():
     print(f"Generated {out_path} (440x280)")
 
 draw_promo_tile()
+

@@ -41,3 +41,4 @@ browserApi.contextMenus.onClicked.addListener((info) => {
     });
   }
 });
+
