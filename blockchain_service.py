@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import workspace
+from config_errors import not_configured
 
 from dotenv import load_dotenv
 
@@ -53,11 +54,11 @@ def _load_contract(require_wallet: bool = True):
     priv_key = os.getenv("WALLET_PRIVATE_KEY") or WALLET_PRIVATE_KEY
 
     if not rpc_url:
-        raise ValueError("SEPOLIA_RPC_URL is not set in .env")
+        raise ValueError(not_configured("Recording on Sepolia", "SEPOLIA_RPC_URL"))
     if not contract_addr:
-        raise ValueError("CONTRACT_ADDRESS is not set in .env (deploy the contract first)")
+        raise ValueError(not_configured("Recording on Sepolia", "CONTRACT_ADDRESS"))
     if require_wallet and not priv_key:
-        raise ValueError("WALLET_PRIVATE_KEY is not set in .env")
+        raise ValueError(not_configured("Recording on Sepolia", "WALLET_PRIVATE_KEY"))
 
     w3 = Web3(Web3.HTTPProvider(rpc_url))
     if not w3.is_connected():
@@ -292,11 +293,11 @@ def _load_case_contract(require_wallet: bool = True):
     priv_key = os.getenv("WALLET_PRIVATE_KEY") or WALLET_PRIVATE_KEY
 
     if not rpc_url:
-        raise ValueError("SEPOLIA_RPC_URL is not set in .env")
+        raise ValueError(not_configured("Recording on Sepolia", "SEPOLIA_RPC_URL"))
     if not contract_addr:
-        raise ValueError("CASE_CONTRACT_ADDRESS is not set in .env (deploy BlockTraceCaseRegistry first)")
+        raise ValueError(not_configured("Anchoring cases on Sepolia", "CASE_CONTRACT_ADDRESS"))
     if require_wallet and not priv_key:
-        raise ValueError("WALLET_PRIVATE_KEY is not set in .env")
+        raise ValueError(not_configured("Anchoring cases on Sepolia", "WALLET_PRIVATE_KEY"))
 
     w3 = Web3(Web3.HTTPProvider(rpc_url))
     if not w3.is_connected():

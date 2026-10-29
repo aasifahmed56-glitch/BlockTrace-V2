@@ -12,6 +12,7 @@ Usage:
 
 import os
 import requests
+from config_errors import not_configured, rejected_credentials
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -48,10 +49,7 @@ def upload_json_to_pinata(data: dict, name: str) -> dict:
         ValueError if PINATA_JWT is not configured.
     """
     if not PINATA_JWT:
-        raise ValueError(
-            "PINATA_JWT environment variable is not set. "
-            "Add it to your .env file — see .env.example for the required keys."
-        )
+        raise ValueError(not_configured("Publishing to IPFS", "PINATA_JWT"))
 
     gateway_base = (PINATA_GATEWAY or "https://gateway.pinata.cloud").rstrip("/")
 
@@ -81,7 +79,7 @@ def upload_json_to_pinata(data: dict, name: str) -> dict:
         raise PinataUploadError(f"Pinata JSON upload request failed: {exc}")
 
     if response.status_code == 401:
-        raise PinataUploadError("Pinata authentication failed (401). Check PINATA_JWT in .env.")
+        raise PinataUploadError(rejected_credentials("Pinata (IPFS)", "PINATA_JWT"))
 
     if response.status_code != 200:
         try:
@@ -120,10 +118,7 @@ def upload_pdf_to_pinata(pdf_bytes: bytes, filename: str, investigation_id: str 
         ValueError if PINATA_JWT is not configured.
     """
     if not PINATA_JWT:
-        raise ValueError(
-            "PINATA_JWT environment variable is not set. "
-            "Add it to your .env file — see .env.example for the required keys."
-        )
+        raise ValueError(not_configured("Publishing to IPFS", "PINATA_JWT"))
 
     gateway_base = (PINATA_GATEWAY or "https://gateway.pinata.cloud").rstrip("/")
 
@@ -161,9 +156,7 @@ def upload_pdf_to_pinata(pdf_bytes: bytes, filename: str, investigation_id: str 
         raise PinataUploadError(f"Pinata request failed: {exc}")
 
     if response.status_code == 401:
-        raise PinataUploadError(
-            "Pinata authentication failed (401). Check that PINATA_JWT in .env is correct."
-        )
+        raise PinataUploadError(rejected_credentials("Pinata (IPFS)", "PINATA_JWT"))
 
     if response.status_code != 200:
         # Try to extract a human-readable error from the response body.
@@ -199,9 +192,7 @@ def upload_encrypted_file_to_pinata(file_bytes: bytes, filename: str, metadata_n
         dict with keys: cid, ipfs_url, gateway_url.
     """
     if not PINATA_JWT:
-        raise ValueError(
-            "PINATA_JWT environment variable is not set in .env."
-        )
+        raise ValueError(not_configured("Publishing to IPFS", "PINATA_JWT"))
 
     gateway_base = (PINATA_GATEWAY or "https://gateway.pinata.cloud").strip().rstrip("/")
     if not gateway_base.startswith("http"):
@@ -237,7 +228,7 @@ def upload_encrypted_file_to_pinata(file_bytes: bytes, filename: str, metadata_n
         raise PinataUploadError(f"Pinata request failed: {exc}")
 
     if response.status_code == 401:
-        raise PinataUploadError("Pinata authentication failed (401). Check PINATA_JWT in .env.")
+        raise PinataUploadError(rejected_credentials("Pinata (IPFS)", "PINATA_JWT"))
 
     if response.status_code != 200:
         try:

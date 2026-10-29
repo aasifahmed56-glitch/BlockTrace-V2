@@ -1276,7 +1276,7 @@ def verify_case_endpoint(case_number: str):
             "timestamp": on_chain["timestamp"],
             "encrypted": True,
             "error": str(exc),
-            "details": f"Decryption failed: {exc}. Ensure CASE_ENCRYPTION_KEY in .env matches the key used during anchoring.",
+            "details": f"Decryption failed: {exc}",
         }
 
     # 3. Re-hash decrypted plaintext snapshot
