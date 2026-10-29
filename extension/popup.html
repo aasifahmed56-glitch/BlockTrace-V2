@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BlockTrace Verifier</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <img src="icons/icon-32.png" alt="" class="brand-icon" width="24" height="24">
+        <span class="brand-title">BlockTrace</span>
+        <span class="brand-tag">Verifier</span>
+      </div>
+      <a href="options.html" target="_blank" class="header-link" title="Extension options and connection status" aria-label="Settings">
+        &#9881;
+      </a>
+    </header>
+
+    <!-- Wakeup alert banner -->
+    <div id="wakeup-banner" class="wakeup-banner hidden" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Waking up the server, this can take up to a minute...</span>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="tabs" role="tablist">
+      <button id="tab-btn-verify" class="tab-btn active" role="tab" aria-selected="true" aria-controls="panel-verify">
+        Verify Report
+      </button>
+      <button id="tab-btn-address" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-address">
+        Check Address
+      </button>
+    </nav>
+
+    <!-- Panel 1: Verify Report -->
+    <main id="panel-verify" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-verify">
+      <form id="verify-form" class="form">
+        <div class="form-group">
+          <label for="pdf-file" class="form-label">
+            Forensic Report (PDF) <span class="required">*</span>
+          </label>
+          <div class="file-dropzone" id="file-dropzone">
+            <input type="file" id="pdf-file" accept="application/pdf" class="file-input" required>
+            <div class="dropzone-content" id="dropzone-text">
+              <span class="dropzone-icon">&#128196;</span>
+              <span class="dropzone-prompt">Choose a PDF or drag here</span>
+              <span class="dropzone-sub">Max 25 MB &bull; Valid %PDF header</span>
+            </div>
+            <div id="file-selected-info" class="file-selected-info hidden">
+              <span class="file-name" id="selected-file-name"></span>
+              <span class="file-size" id="selected-file-size"></span>
+            </div>
+          </div>
+          <p id="file-error" class="input-error hidden" role="alert"></p>
+        </div>
+
+        <div class="form-group">
+          <label for="investigation-hash" class="form-label">
+            Investigation Hash <span class="optional">(optional if in PDF)</span>
+          </label>
+          <input
+            type="text"
+            id="investigation-hash"
+            class="text-input font-mono"
+            placeholder="64 hex chars (0x prefix optional)"
+            spellcheck="false"
+            autocomplete="off"
+            maxlength="66"
+          >
+          <p id="hash-error" class="input-error hidden" role="alert"></p>
+        </div>
+
+        <button type="submit" id="btn-verify" class="btn btn-primary">
+          <span class="btn-text">Verify Report On-Chain</span>
+          <span class="btn-spinner hidden" aria-hidden="true"></span>
+        </button>
+
+        <p class="privacy-notice">
+          Your PDF is sent to the BlockTrace verification server (read-only, not stored).
+        </p>
+      </form>
+
+      <!-- Verify Results -->
+      <section id="verify-result" class="result-card hidden" aria-live="polite">
+        <div class="badge-container">
+          <span id="result-badge" class="badge"></span>
+        </div>
+        <p id="result-message" class="result-message"></p>
+
+        <dl class="meta-list" id="result-meta">
+          <!-- Populated by JS -->
+        </dl>
+
+        <div id="result-links" class="result-links">
+          <!-- Populated by JS: Sepolia Explorer, IPFS Gateway -->
+        </div>
+      </section>
+    </main>
+
+    <!-- Panel 2: Check Address -->
+    <section id="panel-address" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-btn-address">
+      <form id="address-form" class="form">
+        <div class="form-group">
+          <label for="wallet-address" class="form-label">
+            Ethereum Address <span class="required">*</span>
+          </label>
+          <input
+            type="text"
+            id="wallet-address"
+            class="text-input font-mono"
+            placeholder="0x followed by 40 hex characters"
+            spellcheck="false"
+            autocomplete="off"
+            maxlength="42"
+            required
+          >
+          <p id="address-error" class="input-error hidden" role="alert"></p>
+        </div>
+
+        <button type="submit" id="btn-check-address" class="btn btn-primary">
+          <span class="btn-text">Check Sanctions List</span>
+          <span class="btn-spinner hidden" aria-hidden="true"></span>
+        </button>
+      </form>
+
+      <!-- Address Check Results -->
+      <div id="address-result" class="result-card hidden" aria-live="polite">
+        <div class="badge-container">
+          <span id="address-badge" class="badge"></span>
+        </div>
+        <div id="address-details" class="address-details">
+          <!-- Populated by JS -->
+        </div>
+        <div class="action-row">
+          <a id="link-open-blocktrace" href="https://blocktrace-v2.vercel.app" target="_blank" class="btn btn-outline">
+            Open in BlockTrace &rarr;
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <span>BlockTrace Forensics</span>
+      <span>&bull;</span>
+      <a href="https://blocktrace-v2.vercel.app/privacy" target="_blank" class="footer-link">Privacy Policy</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
