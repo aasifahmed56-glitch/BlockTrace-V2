@@ -9,6 +9,7 @@ import os
 import json
 import tempfile
 import pytest
+import case_manager
 from case_manager import (
     validate_case_number,
     generate_case_number,
@@ -147,6 +148,9 @@ def test_backward_compatibility_legacy_case(monkeypatch, tmp_path):
     legacy_file = cases_tmp / "Legacy Case 2025.json"
     with open(legacy_file, "w", encoding="utf-8") as f:
         json.dump(legacy_payload, f)
+
+    # Pre-workspace files sit directly in cases/; the API moves them on startup
+    case_manager.migrate_legacy_cases()
 
     # list_cases should not crash and show case_number as 'Legacy'
     all_cases = list_cases()

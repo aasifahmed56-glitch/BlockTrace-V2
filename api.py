@@ -18,7 +18,6 @@ import time
 import hashlib
 import json as jsonlib
 from typing import Optional, List
-import hmac
 import re as re_module
 from collections import defaultdict
 from threading import Lock
@@ -41,6 +40,7 @@ from logic import (
     check_sanctions, get_entity_label, compute_certificate_hash, verify_certificate
 )
 import case_manager
+import workspace
 from case_manager import (
     DuplicateCaseNumberError, InvalidCaseNumberError, validate_case_number,
     generate_case_number, build_case_snapshot, update_case_blockchain_meta
@@ -68,7 +68,6 @@ ETHERSCAN_URL = "https://api.etherscan.io/v2/api"
 
 # ==================== Public deployment mode ====================
 PUBLIC_MODE = os.getenv("PUBLIC_MODE", "false").lower() == "true"
-ACCESS_CODE = os.getenv("ACCESS_CODE", "")
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
 ALLOW_EXT_ORIGINS = [o.strip() for o in os.getenv("ALLOW_EXTENSION_ORIGINS", "").split(",") if o.strip()]
 
@@ -114,61 +113,79 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["*"],
-    allow_headers=["*", "X-Access-Code", "Content-Type"],
+    allow_headers=["*"],
 )
+app.add_middleware(workspace.WorkspaceMiddleware)
+
+
+@app.on_event("startup")
+def _prepare_workspaces():
+    """Index wallets by workspace and move pre-workspace data into "default"."""
+    try:
+        with driver.session(database=NEO4J_DATABASE) as session:
+            session.run("CREATE INDEX wallet_ws_address IF NOT EXISTS FOR (w:Wallet) ON (w.ws, w.address)")
+            session.run("MATCH (w:Wallet) WHERE w.ws IS NULL SET w.ws = $ws", ws=workspace.DEFAULT_WORKSPACE)
+    except Exception as e:
+        print(f"Workspace setup skipped: {e}")
+    case_manager.migrate_legacy_cases()
 
 
 # ==================== In-memory rate limiter ====================
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
 _rate_limit_store: dict = defaultdict(list)
 _rate_limit_lock = Lock()
-RATE_LIMIT = 30   # max requests
+RATE_LIMIT = 120  # max requests (loading one case fires ~12 API calls)
 RATE_WINDOW = 60  # per this many seconds
 
+# Endpoints that spend the server wallet's Sepolia gas and Pinata storage get a much
+# tighter budget, so nobody can drain the wallet now that the API is open to everyone.
+ONCHAIN_RATE_LIMIT = 5
+ONCHAIN_RATE_WINDOW = 3600
+_ONCHAIN_PATH = re_module.compile(r"^(/api)?/(report/publish|cases/[^/]+/(anchor|reanchor))$")
 
-def _check_rate_limit(ip: str) -> bool:
+
+def _check_rate_limit(key: str, limit: int = RATE_LIMIT, window: int = RATE_WINDOW) -> bool:
     """Returns True if the request is allowed, False if rate-limited."""
     now = time.time()
     with _rate_limit_lock:
-        timestamps = _rate_limit_store[ip]
-        timestamps[:] = [t for t in timestamps if now - t < RATE_WINDOW]
-        if len(timestamps) >= RATE_LIMIT:
+        timestamps = _rate_limit_store[key]
+        timestamps[:] = [t for t in timestamps if now - t < window]
+        if len(timestamps) >= limit:
             return False
         timestamps.append(now)
         return True
 
 
-# ==================== Access-code dependency ====================
-from fastapi import Depends, Header, Request
-from fastapi.responses import JSONResponse
+def _client_ip(request: Request) -> str:
+    # Render sits behind Cloudflare, so request.client is the proxy and every visitor
+    # would share one bucket. Prefer the Cloudflare-set header, then X-Forwarded-For.
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
-async def require_access_code(x_access_code: Optional[str] = Header(None)):
-    """FastAPI dependency that enforces access-code auth in PUBLIC_MODE.
-    When PUBLIC_MODE is False (local dev), all requests pass through unchanged."""
-    if not PUBLIC_MODE:
-        return  # local mode — no check needed
-    if not ACCESS_CODE:
-        return  # public mode but no code configured — allow (fail-open for dev)
-    if not x_access_code or not hmac.compare_digest(x_access_code, ACCESS_CODE):
-        raise HTTPException(
-            status_code=401,
-            detail="Access code required. Enter your access code to use the full workspace."
-        )
-
-
-# ==================== Rate-limit middleware for public endpoints ====================
-_PUBLIC_PATHS = {"/health", "/contracts", "/sanctions/check", "/report/verify", "/api/report/verify"}
-
+# ==================== Rate-limit middleware (public deployment) ====================
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if PUBLIC_MODE and request.url.path in _PUBLIC_PATHS:
-        ip = request.client.host if request.client else "unknown"
-        if not _check_rate_limit(ip):
+    if PUBLIC_MODE and request.method != "OPTIONS" and request.url.path != "/health":
+        ip = _client_ip(request)
+        allowed = _check_rate_limit(ip)
+        retry_after = RATE_WINDOW
+        if allowed and request.method == "POST" and _ONCHAIN_PATH.match(request.url.path):
+            allowed = _check_rate_limit(f"onchain:{ip}", ONCHAIN_RATE_LIMIT, ONCHAIN_RATE_WINDOW)
+            retry_after = ONCHAIN_RATE_WINDOW
+        if not allowed:
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Too many requests. Please wait before retrying."},
-                headers={"Retry-After": "60"},
+                headers={"Retry-After": str(retry_after)},
             )
     response = await call_next(request)
     return response
@@ -314,12 +331,12 @@ def load_transactions(session, transactions):
 
         session.run(
             """
-            MERGE (a:Wallet {address: $from_addr})
-            MERGE (b:Wallet {address: $to_addr})
+            MERGE (a:Wallet {address: $from_addr, ws: $ws})
+            MERGE (b:Wallet {address: $to_addr, ws: $ws})
             MERGE (a)-[t:SENT {hash: $tx_hash}]->(b)
             SET t.value = $value_eth, t.timestamp = $timestamp
             """,
-            from_addr=from_addr, to_addr=to_addr, tx_hash=tx["hash"],
+            ws=workspace.current(), from_addr=from_addr, to_addr=to_addr, tx_hash=tx["hash"],
             value_eth=value_eth, timestamp=tx["timeStamp"]
         )
         new_wallets.add(from_addr)
@@ -388,8 +405,8 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
 def get_graph_data(limit=300):
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
-            "MATCH (a:Wallet)-[r:SENT]->(b:Wallet) RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value LIMIT $limit",
-            limit=limit
+            "MATCH (a:Wallet {ws: $ws})-[r:SENT]->(b:Wallet) RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value LIMIT $limit",
+            ws=workspace.current(), limit=limit
         )
         return [(r["from_addr"], r["to_addr"], r["value"]) for r in result]
 
@@ -397,7 +414,8 @@ def get_graph_data(limit=300):
 def get_summary_stats():
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
-            "MATCH (w:Wallet) OPTIONAL MATCH (w)-[r:SENT]->() RETURN count(DISTINCT w) AS wallets, count(r) AS txs"
+            "MATCH (w:Wallet {ws: $ws}) OPTIONAL MATCH (w)-[r:SENT]->() RETURN count(DISTINCT w) AS wallets, count(r) AS txs",
+            ws=workspace.current()
         )
         record = result.single()
         return record["wallets"], record["txs"]
@@ -407,12 +425,12 @@ def get_data_window_stats():
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
             """
-            MATCH ()-[r:SENT]->()
+            MATCH (:Wallet {ws: $ws})-[r:SENT]->()
             WHERE r.timestamp IS NOT NULL
             WITH toInteger(r.timestamp) AS ts
             WHERE ts IS NOT NULL AND ts > 0
             RETURN min(ts) AS min_ts, max(ts) AS max_ts
-            """
+            """, ws=workspace.current()
         )
         record = result.single()
         if record and record["min_ts"] is not None and record["max_ts"] is not None:
@@ -438,10 +456,10 @@ def get_hub_wallets(limit=1000):
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
             """
-            MATCH (w:Wallet)-[r:SENT]-()
+            MATCH (w:Wallet {ws: $ws})-[r:SENT]-()
             RETURN w.address AS wallet, count(r) AS total_txs
             ORDER BY total_txs DESC LIMIT $limit
-            """, limit=limit
+            """, ws=workspace.current(), limit=limit
         )
         return [(r["wallet"], r["total_txs"]) for r in result]
 
@@ -450,12 +468,12 @@ def get_fanout_wallets(min_recipients=4, limit=1000):
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
             """
-            MATCH (a:Wallet)-[:SENT]->(b:Wallet)
+            MATCH (a:Wallet {ws: $ws})-[:SENT]->(b:Wallet)
             WITH a, count(DISTINCT b) AS distinct_recipients
             WHERE distinct_recipients >= $min_recipients
             RETURN a.address AS wallet, distinct_recipients
             ORDER BY distinct_recipients DESC LIMIT $limit
-            """, min_recipients=min_recipients, limit=limit
+            """, ws=workspace.current(), min_recipients=min_recipients, limit=limit
         )
         return [(r["wallet"], r["distinct_recipients"]) for r in result]
 
@@ -464,7 +482,7 @@ def get_peel_chains(limit=1000):
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
             """
-            MATCH (mid:Wallet)-[r2:SENT]->(next1:Wallet)
+            MATCH (mid:Wallet {ws: $ws})-[r2:SENT]->(next1:Wallet)
             MATCH (mid)-[r3:SENT]->(next2:Wallet)
             WHERE elementId(next1) < elementId(next2) AND r2.value > 0.001 AND r3.value > 0.001
             WITH mid,
@@ -477,7 +495,7 @@ def get_peel_chains(limit=1000):
             RETURN mid.address AS wallet, top_match.main AS main_amount, top_match.peel AS peel_amount
             ORDER BY main_amount DESC
             LIMIT $limit
-            """, limit=limit
+            """, ws=workspace.current(), limit=limit
         )
         return [(r["wallet"], r["main_amount"], r["peel_amount"]) for r in result]
 
@@ -486,12 +504,12 @@ def get_round_number_transactions(min_value=1.0, limit=1000):
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
             """
-            MATCH (a:Wallet)-[r:SENT]->(b:Wallet)
+            MATCH (a:Wallet {ws: $ws})-[r:SENT]->(b:Wallet)
             WHERE r.value >= $min_value AND r.value = toInteger(r.value)
             RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value
             ORDER BY r.value DESC
             LIMIT $limit
-            """, min_value=min_value, limit=limit
+            """, ws=workspace.current(), min_value=min_value, limit=limit
         )
         return [(r["from_addr"], r["to_addr"], r["value"]) for r in result]
 
@@ -500,24 +518,24 @@ def get_circular_flows(max_hops=4, limit=1000):
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
             """
-            MATCH path = (a:Wallet)-[:SENT*2..%d]->(a)
+            MATCH path = (a:Wallet {ws: $ws})-[:SENT*2..%d]->(a)
             RETURN DISTINCT a.address AS wallet, length(path) AS hops
             ORDER BY hops ASC
             LIMIT $limit
-            """ % max_hops, limit=limit
+            """ % max_hops, ws=workspace.current(), limit=limit
         )
         return [(r["wallet"], r["hops"]) for r in result]
 
 
 def get_all_wallet_addresses():
     with driver.session(database=NEO4J_DATABASE) as session:
-        result = session.run("MATCH (w:Wallet) RETURN w.address AS address")
+        result = session.run("MATCH (w:Wallet {ws: $ws}) RETURN w.address AS address", ws=workspace.current())
         return [r["address"] for r in result]
 
 
 def clear_graph():
     with driver.session(database=NEO4J_DATABASE) as session:
-        session.run("MATCH (n:Wallet) DETACH DELETE n")
+        session.run("MATCH (n:Wallet {ws: $ws}) DETACH DELETE n", ws=workspace.current())
 
 
 def load_case_edges(edges):
@@ -528,12 +546,12 @@ def load_case_edges(edges):
             ).hexdigest()
             session.run(
                 """
-                MERGE (a:Wallet {address: $from_addr})
-                MERGE (b:Wallet {address: $to_addr})
+                MERGE (a:Wallet {address: $from_addr, ws: $ws})
+                MERGE (b:Wallet {address: $to_addr, ws: $ws})
                 MERGE (a)-[t:SENT {hash: $tx_hash}]->(b)
                 SET t.value = $value_eth
                 """,
-                from_addr=e["from"], to_addr=e["to"], tx_hash=synthetic_hash, value_eth=e["value"]
+                ws=workspace.current(), from_addr=e["from"], to_addr=e["to"], tx_hash=synthetic_hash, value_eth=e["value"]
             )
 
 
@@ -541,7 +559,7 @@ def get_paths_between(source, destination, max_hops=6, limit=10):
     with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(
             """
-            MATCH (a:Wallet), (b:Wallet)
+            MATCH (a:Wallet {ws: $ws}), (b:Wallet {ws: $ws})
             WHERE toLower(a.address) = toLower($source) AND toLower(b.address) = toLower($destination)
             MATCH p = (a)-[:SENT*1..%d]->(b)
             RETURN [n IN nodes(p) | n.address] AS wallets,
@@ -550,7 +568,7 @@ def get_paths_between(source, destination, max_hops=6, limit=10):
             ORDER BY hops ASC
             LIMIT $limit
             """ % max_hops,
-            source=source, destination=destination, limit=limit
+            ws=workspace.current(), source=source, destination=destination, limit=limit
         )
         return [{"wallets": r["wallets"], "rels": r["rels"], "hops": r["hops"]} for r in result]
 
@@ -587,8 +605,6 @@ def _resolve_chainid(chain_name):
 
 
 # ==================== Endpoints ====================
-
-# ==================== Public endpoints (no access code required) ====================
 
 @app.get("/")
 def root():
@@ -635,12 +651,12 @@ def sanctions_check(address: str):
     }
 
 
-@app.get("/chains", dependencies=[Depends(require_access_code)])
+@app.get("/chains")
 def list_chains():
     return {"chains": list(CHAIN_OPTIONS.keys())}
 
 
-@app.get("/curated-cases", dependencies=[Depends(require_access_code)])
+@app.get("/curated-cases")
 def list_curated_cases():
     return {
         "cases": [
@@ -650,7 +666,7 @@ def list_curated_cases():
     }
 
 
-@app.post("/curated-cases/{case_name}/load", dependencies=[Depends(require_access_code)])
+@app.post("/curated-cases/{case_name}/load")
 def load_curated_case(case_name: str):
     if case_name not in CURATED_CASES:
         raise HTTPException(status_code=404, detail="Unknown curated case name.")
@@ -670,7 +686,7 @@ def load_curated_case(case_name: str):
 
 
 
-@app.post("/expand", dependencies=[Depends(require_access_code)])
+@app.post("/expand")
 def expand(req: ExpandRequest):
     chainid = _resolve_chainid(req.chain)
     startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
@@ -696,13 +712,13 @@ def expand(req: ExpandRequest):
 
 
 
-@app.post("/clear", dependencies=[Depends(require_access_code)])
+@app.post("/clear")
 def clear():
     clear_graph()
     return {"status": "cleared"}
 
 
-@app.get("/summary", dependencies=[Depends(require_access_code)])
+@app.get("/summary")
 def summary():
     wallets, txs = get_summary_stats()
     dw = get_data_window_stats()
@@ -715,49 +731,49 @@ def summary():
     }
 
 
-@app.get("/data-window", dependencies=[Depends(require_access_code)])
+@app.get("/data-window")
 def data_window_endpoint():
     return get_data_window_stats()
 
 
-@app.get("/graph", dependencies=[Depends(require_access_code)])
+@app.get("/graph")
 def graph():
     edges = get_graph_data()
     return {"edges": [{"from": f, "to": t, "value": v} for f, t, v in edges]}
 
 
-@app.get("/detections/hub", dependencies=[Depends(require_access_code)])
+@app.get("/detections/hub")
 def detections_hub():
     return {"results": [{"wallet": w, "total_txs": c, "label": get_entity_label(w)} for w, c in get_hub_wallets()]}
 
 
-@app.get("/detections/fanout", dependencies=[Depends(require_access_code)])
+@app.get("/detections/fanout")
 def detections_fanout():
     return {"results": [{"wallet": w, "distinct_recipients": c, "label": get_entity_label(w)} for w, c in get_fanout_wallets()]}
 
 
-@app.get("/detections/peel-chains", dependencies=[Depends(require_access_code)])
+@app.get("/detections/peel-chains")
 def detections_peel():
     return {"results": [{"wallet": w, "main_amount": m, "peel_amount": p, "label": get_entity_label(w)} for w, m, p in get_peel_chains()]}
 
 
-@app.get("/detections/round-number", dependencies=[Depends(require_access_code)])
+@app.get("/detections/round-number")
 def detections_round():
     return {"results": [{"from": f, "to": t, "value": v} for f, t, v in get_round_number_transactions()]}
 
 
-@app.get("/detections/circular", dependencies=[Depends(require_access_code)])
+@app.get("/detections/circular")
 def detections_circular():
     return {"results": [{"wallet": w, "hops": h, "label": get_entity_label(w)} for w, h in get_circular_flows()]}
 
 
-@app.get("/sanctions", dependencies=[Depends(require_access_code)])
+@app.get("/sanctions")
 def sanctions():
     matches = check_sanctions(get_all_wallet_addresses())
     return {"matches": [{"wallet": addr, **entry} for addr, entry in matches]}
 
 
-@app.get("/risk", dependencies=[Depends(require_access_code)])
+@app.get("/risk")
 def risk():
     hub_data = get_hub_wallets()
     fanout_data = get_fanout_wallets()
@@ -778,7 +794,7 @@ def risk():
     return {"results": result}
 
 
-@app.get("/narrative", dependencies=[Depends(require_access_code)])
+@app.get("/narrative")
 def narrative(start_wallet: Optional[str] = None):
     hub_data = get_hub_wallets()
     fanout_data = get_fanout_wallets()
@@ -801,7 +817,7 @@ def narrative(start_wallet: Optional[str] = None):
     return {"paragraphs": paragraphs}
 
 
-@app.post("/path", dependencies=[Depends(require_access_code)])
+@app.post("/path")
 def find_path(req: PathRequest):
     chainid = _resolve_chainid(req.chain)
     startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
@@ -820,13 +836,13 @@ def find_path(req: PathRequest):
     return {"found": len(paths) > 0, "wallets_visited": visited, "paths": paths, "hit_limit": len(limited) > 0, "limit_note": limit_note}
 
 
-@app.get("/cases", dependencies=[Depends(require_access_code)])
+@app.get("/cases")
 def list_cases():
     cases = case_manager.list_cases()
     return {"cases": cases}
 
 
-@app.post("/cases", dependencies=[Depends(require_access_code)])
+@app.post("/cases")
 def save_case(req: SaveCaseRequest):
     edges = get_graph_data()
     if not edges:
@@ -980,8 +996,8 @@ def save_case(req: SaveCaseRequest):
     return response
 
 
-@app.post("/cases/{case_number}/anchor", dependencies=[Depends(require_access_code)])
-@app.post("/api/cases/{case_number}/anchor", dependencies=[Depends(require_access_code)])
+@app.post("/cases/{case_number}/anchor")
+@app.post("/api/cases/{case_number}/anchor")
 def retry_anchor_case(case_number: str):
     case_data = case_manager.load_case(case_number)
     if not case_data:
@@ -1065,8 +1081,8 @@ def retry_anchor_case(case_number: str):
         raise HTTPException(status_code=502, detail=f"On-chain anchor failed: {exc}")
 
 
-@app.post("/cases/{case_number}/reanchor", dependencies=[Depends(require_access_code)])
-@app.post("/api/cases/{case_number}/reanchor", dependencies=[Depends(require_access_code)])
+@app.post("/cases/{case_number}/reanchor")
+@app.post("/api/cases/{case_number}/reanchor")
 def reanchor_case(case_number: str):
     """Re-anchors a case (e.g. a legacy unencrypted case) with an AES-256-GCM encrypted snapshot.
 
@@ -1138,8 +1154,8 @@ def reanchor_case(case_number: str):
         raise HTTPException(status_code=502, detail=f"On-chain re-anchor failed: {exc}")
 
 
-@app.get("/cases/{case_number}/verify", dependencies=[Depends(require_access_code)])
-@app.get("/api/cases/{case_number}/verify", dependencies=[Depends(require_access_code)])
+@app.get("/cases/{case_number}/verify")
+@app.get("/api/cases/{case_number}/verify")
 def verify_case_endpoint(case_number: str):
     case_data = case_manager.load_case(case_number)
     if not case_data:
@@ -1270,7 +1286,7 @@ def verify_case_endpoint(case_number: str):
     }
 
 
-@app.post("/cases/{name}/load", dependencies=[Depends(require_access_code)])
+@app.post("/cases/{name}/load")
 def load_case(name: str):
     case_data = case_manager.load_case(name)
     if not case_data:
@@ -1289,7 +1305,7 @@ def load_case(name: str):
     }
 
 
-@app.delete("/cases/{name}", dependencies=[Depends(require_access_code)])
+@app.delete("/cases/{name}")
 def delete_case(name: str):
     deleted = case_manager.delete_case(name)
     if not deleted:
@@ -1297,7 +1313,7 @@ def delete_case(name: str):
     return {"status": "deleted"}
 
 
-@app.post("/certificate", dependencies=[Depends(require_access_code)])
+@app.post("/certificate")
 def issue_certificate(req: CertificateRequest):
     edges = get_graph_data()
     if not edges:
@@ -1342,13 +1358,13 @@ def issue_certificate(req: CertificateRequest):
     }
 
 
-@app.post("/certificate/verify", dependencies=[Depends(require_access_code)])
+@app.post("/certificate/verify")
 def verify_cert(req: CertificateVerifyRequest):
     is_valid = verify_certificate(req.payload, req.previous_hash, req.certificate_hash)
     return {"valid": is_valid}
 
 
-@app.get("/report", dependencies=[Depends(require_access_code)])
+@app.get("/report")
 def report(start_wallet: Optional[str] = None):
     wallet = start_wallet or "0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
     output_path = "investigation_report.pdf"
@@ -1357,7 +1373,7 @@ def report(start_wallet: Optional[str] = None):
     return FileResponse(output_path, media_type="application/pdf", filename="investigation_report.pdf")
 
 
-@app.post("/report/publish", dependencies=[Depends(require_access_code)])
+@app.post("/report/publish")
 def publish_report(req: PublishReportRequest):
     """Generate the PDF report, upload it to IPFS via Pinata, and store the
     investigation hash + IPFS CID on the Sepolia testnet via the

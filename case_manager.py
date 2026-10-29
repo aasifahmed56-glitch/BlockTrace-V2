@@ -1,7 +1,7 @@
 """
 Case management — save and reload named investigations without re-hitting the
 Etherscan API each time. A "case" is the set of transactions and findings currently in the
-graph, saved as JSON under ./cases/<name>.json.
+graph, saved as JSON under ./cases/<workspace>/<name>.json.
 
 Supports unique case_number identifiers, deterministic JSON snapshot hashing,
 and on-chain anchoring metadata.
@@ -13,6 +13,8 @@ import json
 import hashlib
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
+
+import workspace
 
 CASES_DIR = "cases"
 CASE_NUMBER_REGEX = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
@@ -28,8 +30,27 @@ class InvalidCaseNumberError(ValueError):
     pass
 
 
+def _cases_dir() -> str:
+    """Case folder for the current request's workspace."""
+    return os.path.join(CASES_DIR, workspace.current())
+
+
 def _ensure_cases_dir():
-    os.makedirs(CASES_DIR, exist_ok=True)
+    os.makedirs(_cases_dir(), exist_ok=True)
+
+
+def migrate_legacy_cases():
+    """Move case files saved before workspaces existed into the default workspace."""
+    if not os.path.isdir(CASES_DIR):
+        return
+    default_dir = os.path.join(CASES_DIR, workspace.DEFAULT_WORKSPACE)
+    for fname in os.listdir(CASES_DIR):
+        src = os.path.join(CASES_DIR, fname)
+        if fname.endswith(".json") and os.path.isfile(src):
+            os.makedirs(default_dir, exist_ok=True)
+            dst = os.path.join(default_dir, fname)
+            if not os.path.exists(dst):
+                os.replace(src, dst)
 
 
 def _canonicalize_numbers(obj):
@@ -74,11 +95,11 @@ def generate_case_number() -> str:
     prefix = f"BT-{year}-"
     max_seq = 0
 
-    for fname in os.listdir(CASES_DIR):
+    for fname in os.listdir(_cases_dir()):
         if not fname.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CASES_DIR, fname), "r", encoding="utf-8") as f:
+            with open(os.path.join(_cases_dir(), fname), "r", encoding="utf-8") as f:
                 data = json.load(f)
             num = data.get("case_number", "")
             if num.startswith(prefix):
@@ -99,11 +120,11 @@ def check_case_number_unique(case_number: str, current_case_name: Optional[str] 
     _ensure_cases_dir()
     target_lower = case_number.strip().lower()
 
-    for fname in os.listdir(CASES_DIR):
+    for fname in os.listdir(_cases_dir()):
         if not fname.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CASES_DIR, fname), "r", encoding="utf-8") as f:
+            with open(os.path.join(_cases_dir(), fname), "r", encoding="utf-8") as f:
                 data = json.load(f)
             num = data.get("case_number")
             if num and num.strip().lower() == target_lower:
@@ -224,7 +245,7 @@ def save_case(name: str, start_wallet: str, edges: list, case_number: Optional[s
         "encryption_version": meta.get("encryption_version", 1 if meta.get("encrypted") else None),
     }
 
-    path = os.path.join(CASES_DIR, f"{safe_name}.json")
+    path = os.path.join(_cases_dir(), f"{safe_name}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
@@ -243,7 +264,7 @@ def update_case_blockchain_meta(identifier: str, meta: dict) -> Optional[dict]:
             case_data[k] = meta[k]
 
     safe_name = case_data["name"]
-    path = os.path.join(CASES_DIR, f"{safe_name}.json")
+    path = os.path.join(_cases_dir(), f"{safe_name}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(case_data, f, indent=2)
 
@@ -258,11 +279,11 @@ def list_cases() -> List[Dict[str, Any]]:
     """
     _ensure_cases_dir()
     cases = []
-    for fname in os.listdir(CASES_DIR):
+    for fname in os.listdir(_cases_dir()):
         if not fname.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CASES_DIR, fname), "r", encoding="utf-8") as f:
+            with open(os.path.join(_cases_dir(), fname), "r", encoding="utf-8") as f:
                 data = json.load(f)
             case_info = {
                 "name": data.get("name", fname[:-5]),
@@ -294,7 +315,7 @@ def load_case(identifier: str) -> Optional[Dict[str, Any]]:
     """
     _ensure_cases_dir()
     # 1. Direct filename check by name
-    path = os.path.join(CASES_DIR, f"{identifier}.json")
+    path = os.path.join(_cases_dir(), f"{identifier}.json")
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -307,11 +328,11 @@ def load_case(identifier: str) -> Optional[Dict[str, Any]]:
 
     # 2. Search by case_number or case_name inside files
     ident_lower = identifier.strip().lower()
-    for fname in os.listdir(CASES_DIR):
+    for fname in os.listdir(_cases_dir()):
         if not fname.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CASES_DIR, fname), "r", encoding="utf-8") as f:
+            with open(os.path.join(_cases_dir(), fname), "r", encoding="utf-8") as f:
                 data = json.load(f)
             num = data.get("case_number", "")
             name = data.get("name", "")
@@ -329,23 +350,23 @@ def delete_case(identifier: str) -> bool:
     """Deletes a saved case file by name or case_number."""
     _ensure_cases_dir()
     # Direct check
-    path = os.path.join(CASES_DIR, f"{identifier}.json")
+    path = os.path.join(_cases_dir(), f"{identifier}.json")
     if os.path.exists(path):
         os.remove(path)
         return True
 
     # Search by case_number or name
     ident_lower = identifier.strip().lower()
-    for fname in os.listdir(CASES_DIR):
+    for fname in os.listdir(_cases_dir()):
         if not fname.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CASES_DIR, fname), "r", encoding="utf-8") as f:
+            with open(os.path.join(_cases_dir(), fname), "r", encoding="utf-8") as f:
                 data = json.load(f)
             num = data.get("case_number", "")
             name = data.get("name", "")
             if (num and num.lower() == ident_lower) or name.lower() == ident_lower:
-                os.remove(os.path.join(CASES_DIR, fname))
+                os.remove(os.path.join(_cases_dir(), fname))
                 return True
         except Exception:
             continue

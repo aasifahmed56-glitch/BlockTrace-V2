@@ -5,6 +5,31 @@ import axios from 'axios';
 // to the Render backend URL (e.g. https://blocktrace-v2.onrender.com).
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 
+// ==================== Workspace ====================
+// Each browser gets its own private workspace (graph + saved cases) on the shared
+// backend. The ID is random, kept in localStorage, and sent with every request.
+const WORKSPACE_KEY = 'bt_workspace_id';
+
+const newWorkspaceId = () =>
+  (window.crypto?.randomUUID?.() ||
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`);
+
+let workspaceId;
+export const getWorkspaceId = () => {
+  if (workspaceId) return workspaceId;
+  try {
+    workspaceId = localStorage.getItem(WORKSPACE_KEY);
+    if (!workspaceId) {
+      workspaceId = newWorkspaceId();
+      localStorage.setItem(WORKSPACE_KEY, workspaceId);
+    }
+  } catch {
+    // Storage blocked (private mode etc.): keep a per-tab workspace instead.
+    workspaceId = workspaceId || newWorkspaceId();
+  }
+  return workspaceId;
+};
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
@@ -12,22 +37,8 @@ const api = axios.create({
   },
 });
 
-// ==================== Access code (public mode auth) ====================
-export const getAccessCode = () => sessionStorage.getItem('bt_access_code') || '';
-export const setAccessCode = (code) => {
-  if (code) {
-    sessionStorage.setItem('bt_access_code', code);
-  } else {
-    sessionStorage.removeItem('bt_access_code');
-  }
-};
-
-// Inject X-Access-Code header on every request if one is stored
 api.interceptors.request.use((config) => {
-  const code = getAccessCode();
-  if (code) {
-    config.headers['X-Access-Code'] = code;
-  }
+  config.headers['X-Workspace-Id'] = getWorkspaceId();
   return config;
 });
 
@@ -61,11 +72,6 @@ export const getErrorMessage = (error) => {
     return JSON.stringify(error.response.data.detail);
   }
   return error.message || 'An unexpected error occurred';
-};
-
-// Returns true if the error is a 401 (access code required)
-export const isAccessDenied = (error) => {
-  return error?.response?.status === 401;
 };
 
 // Chains & Curated Cases
@@ -227,8 +233,11 @@ export const deleteSavedCase = async (name) => {
 };
 
 export const getReportUrl = (startWallet) => {
-  // Direct link to the backend for browser download (not through axios).
-  return `${API_BASE_URL}/report${startWallet ? `?start_wallet=${encodeURIComponent(startWallet)}` : ''}`;
+  // Direct link to the backend for browser download (not through axios), so the
+  // workspace goes in the query string instead of a header.
+  const params = new URLSearchParams({ ws: getWorkspaceId() });
+  if (startWallet) params.set('start_wallet', startWallet);
+  return `${API_BASE_URL}/report?${params}`;
 };
 
 export const publishReport = async (startWallet) => {

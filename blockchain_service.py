@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Optional
 
+import workspace
+
 from dotenv import load_dotenv
 
 try:
@@ -317,8 +319,16 @@ def _load_case_contract(require_wallet: bool = True):
 
 
 def case_number_to_hash(case_number: str) -> bytes:
-    """Computes keccak256 hash of the case number string as bytes32."""
+    """Computes keccak256 hash of the case number string as bytes32.
+
+    Outside the default workspace the key is "<workspace>:<case number>", so two
+    visitors using the same case number never overwrite each other's on-chain record.
+    The default workspace keeps the bare case number, so cases anchored before
+    workspaces existed still verify."""
     trimmed = case_number.strip()
+    ws = workspace.current()
+    if ws != workspace.DEFAULT_WORKSPACE:
+        trimmed = f"{ws}:{trimmed}"
     if Web3 is not None:
         return Web3.keccak(text=trimmed)
     import hashlib
