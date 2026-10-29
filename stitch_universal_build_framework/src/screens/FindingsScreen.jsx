@@ -2,6 +2,32 @@ import React, { useState } from 'react';
 import { useInvestigation } from '../context/InvestigationContext';
 import { getReportUrl } from '../api/client';
 
+// The backend narrative (logic.build_narrative) marks up wallet addresses and key
+// figures with two tags. Turn just those into elements and keep everything else as
+// plain text, so wallet labels from external data can never inject HTML.
+const NARRATIVE_TAG = /<span class='tc-mono'>(.*?)<\/span>|<strong>(.*?)<\/strong>/g;
+
+const renderNarrative = (text) => {
+  const parts = [];
+  let last = 0;
+  for (const match of text.matchAll(NARRATIVE_TAG)) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    const [, address, emphasis] = match;
+    parts.push(
+      address !== undefined ? (
+        <span key={match.index} className="font-mono text-[0.92em] bg-surface-variant/60 px-1 rounded">
+          {address}
+        </span>
+      ) : (
+        <strong key={match.index} className="font-semibold">{emphasis}</strong>
+      ),
+    );
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+};
+
 export const FindingsScreen = () => {
   const {
     startWallet,
@@ -96,7 +122,7 @@ export const FindingsScreen = () => {
 
         <div className="font-body-md text-sm text-on-surface space-y-3 leading-relaxed">
           {narrativeParagraphs && narrativeParagraphs.length > 0 ? (
-            narrativeParagraphs.map((para, index) => <p key={index}>{para}</p>)
+            narrativeParagraphs.map((para, index) => <p key={index}>{renderNarrative(para)}</p>)
           ) : (
             <p className="text-on-surface-variant italic">
               No active narrative generated yet. Load a case or trace an address in the Investigate tab to view detailed behavioral analysis.

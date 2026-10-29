@@ -292,3 +292,15 @@ def test_verify_certificate_rejects_tampered_prev_hash():
     payload = {"wallet": WALLET_A, "score": 3}
     h = compute_certificate_hash(payload, "GENESIS")
     assert verify_certificate(payload, "some_forged_prev_hash", h) is False
+
+
+@pytest.mark.parametrize("main_amt, peel_amt, expected", [
+    (49.68, 0.0064, "about 0.013%"),   # tiny peel used to print "about 0.0%"
+    (10.0, 0.5, "about 5.0%"),
+    (100.0, 0.5, "about 0.5%"),
+    (1000.0, 0.00001, "less than 0.01%"),
+])
+def test_peel_percentage_is_readable(main_amt, peel_amt, expected):
+    paragraphs = build_narrative(WALLET_A, 10, 20, [], [], [(WALLET_B, main_amt, peel_amt)], [], [])
+    peel_para = next(p for p in paragraphs if "peel chain" in p)
+    assert f"({expected})" in peel_para

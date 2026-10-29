@@ -79,27 +79,20 @@ export const InvestigationProvider = ({ children }) => {
 
     const doHealthCheck = async () => {
       try {
-        await checkHealth();
-        if (!cancelled) {
-          setServerReady(true);
-          setServerWaking(false);
+        try {
+          await checkHealth();
+        } catch {
+          // Retry once on network failure (Render cold start)
+          if (cancelled) return;
+          await checkHealth();
         }
+        if (!cancelled) setServerReady(true);
       } catch (err) {
-        // Retry once on network failure (Render cold start)
-        if (!cancelled) {
-          try {
-            await checkHealth();
-            if (!cancelled) {
-              setServerReady(true);
-              setServerWaking(false);
-            }
-          } catch {
-            if (!cancelled) {
-              setServerWaking(false);
-              console.error('Server health check failed after retry:', err);
-            }
-          }
-        }
+        if (!cancelled) console.error('Server health check failed after retry:', err);
+      } finally {
+        // Stop the banner timer too: a fast response must not let it fire afterwards.
+        clearTimeout(wakeTimer);
+        if (!cancelled) setServerWaking(false);
       }
     };
 
