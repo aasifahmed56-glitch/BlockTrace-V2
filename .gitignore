@@ -22,3 +22,10 @@ cases/
 *.enc
 investigation_report.pdf
 
+
+# Desktop app build outputs (regenerate with desktop/build.ps1)
+desktop/.venv/
+desktop/build/
+desktop/web/
+desktop/assets/
+desktop/.tools/
