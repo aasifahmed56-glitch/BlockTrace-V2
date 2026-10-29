@@ -131,9 +131,16 @@ def build_narrative(start_wallet, wallets_count, txs_count, hub_data, fanout_dat
     if peel_data:
         top_wallet, main_amt, peel_amt = peel_data[0]
         pct = (peel_amt / main_amt * 100) if main_amt else 0
+        # Peel remainders are tiny by definition, so one decimal place would print "0.0%".
+        if pct >= 1:
+            pct_text = f"about {pct:.1f}%"
+        elif pct >= 0.01:
+            pct_text = f"about {pct:.2g}%"
+        else:
+            pct_text = "less than 0.01%"
         paragraphs.append(
             f"Wallet <span class='tc-mono'>{short(top_wallet)}</span> forwarded <strong>{main_amt:.4f} ETH</strong> "
-            f"while retaining only <strong>{peel_amt:.4f} ETH</strong> (about {pct:.1f}%). This \"peel chain\" "
+            f"while retaining only <strong>{peel_amt:.4f} ETH</strong> ({pct_text}). This \"peel chain\" "
             f"shape — passing on the bulk of funds while keeping a small remainder — matches a technique "
             f"documented in known money-laundering cases."
         )
