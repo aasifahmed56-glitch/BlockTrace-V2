@@ -53,7 +53,8 @@ def test_get_master_key_missing(monkeypatch):
     monkeypatch.delenv("CASE_ENCRYPTION_KEY", raising=False)
     with pytest.raises(CryptoKeyMissingError) as exc_info:
         get_master_key()
-    assert "CASE_ENCRYPTION_KEY is not set" in str(exc_info.value)
+    assert "isn't set up on this server" in str(exc_info.value)
+    assert ".env" not in str(exc_info.value)
 
 
 def test_get_master_key_invalid_length(monkeypatch):

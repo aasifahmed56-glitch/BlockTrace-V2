@@ -12,6 +12,8 @@ import os
 import json
 import base64
 from typing import Optional
+
+from config_errors import not_configured
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -52,11 +54,7 @@ def get_master_key() -> bytes:
     """
     raw_b64 = os.getenv("CASE_ENCRYPTION_KEY")
     if not raw_b64 or not raw_b64.strip():
-        raise CryptoKeyMissingError(
-            "CASE_ENCRYPTION_KEY is not set in .env. "
-            "Run 'python generate_key.py' to generate a secure master key, "
-            "and add it to your .env file."
-        )
+        raise CryptoKeyMissingError(not_configured("Case encryption", "CASE_ENCRYPTION_KEY"))
 
     clean_b64 = raw_b64.strip()
     try:
