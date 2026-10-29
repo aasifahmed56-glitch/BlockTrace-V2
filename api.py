@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from neo4j import GraphDatabase
+from neo4j.exceptions import ServiceUnavailable, SessionExpired
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -71,7 +72,42 @@ PUBLIC_MODE = os.getenv("PUBLIC_MODE", "false").lower() == "true"
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
 ALLOW_EXT_ORIGINS = [o.strip() for o in os.getenv("ALLOW_EXTENSION_ORIGINS", "").split(",") if o.strip()]
 
-driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+# Aura silently drops idle connections, which surfaced as intermittent 500s
+# ("Unable to retrieve routing information"). Recycle connections well before that
+# and health-check any that sat idle before reusing them.
+driver = GraphDatabase.driver(
+    NEO4J_URI,
+    auth=(NEO4J_USER, NEO4J_PASSWORD),
+    max_connection_lifetime=240,
+    liveness_check_timeout=30,
+    keep_alive=True,
+)
+
+
+class _RetryingSession:
+    """Session wrapper that retries a query once on a fresh session when the
+    connection turns out to be dead. Graph writes use MERGE, so a retry is safe."""
+
+    def __init__(self):
+        self._session = driver.session(database=NEO4J_DATABASE)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._session.close()
+
+    def run(self, query, *args, **params):
+        try:
+            return self._session.run(query, *args, **params)
+        except (ServiceUnavailable, SessionExpired):
+            self._session.close()
+            self._session = driver.session(database=NEO4J_DATABASE)
+            return self._session.run(query, *args, **params)
+
+
+def neo4j_session():
+    return _RetryingSession()
 
 CHAIN_OPTIONS = {
     "Ethereum": 1,
@@ -122,7 +158,7 @@ app.add_middleware(workspace.WorkspaceMiddleware)
 def _prepare_workspaces():
     """Index wallets by workspace and move pre-workspace data into "default"."""
     try:
-        with driver.session(database=NEO4J_DATABASE) as session:
+        with neo4j_session() as session:
             session.run("CREATE INDEX wallet_ws_address IF NOT EXISTS FOR (w:Wallet) ON (w.ws, w.address)")
             session.run("MATCH (w:Wallet) WHERE w.ws IS NULL SET w.ws = $ws", ws=workspace.DEFAULT_WORKSPACE)
     except Exception as e:
@@ -348,7 +384,7 @@ def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startb
     visited = set()
     current_layer = {start_wallet}
     limit_hit_wallets = []
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         for hop in range(hops):
             next_layer = set()
             for wallet in current_layer:
@@ -378,7 +414,7 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
     current_layer = {source}
     found = False
     limit_hit_wallets = []
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         for hop in range(max_hops):
             next_layer = set()
             for wallet in current_layer:
@@ -403,7 +439,7 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
 
 
 def get_graph_data(limit=300):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             "MATCH (a:Wallet {ws: $ws})-[r:SENT]->(b:Wallet) RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value LIMIT $limit",
             ws=workspace.current(), limit=limit
@@ -412,7 +448,7 @@ def get_graph_data(limit=300):
 
 
 def get_summary_stats():
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             "MATCH (w:Wallet {ws: $ws}) OPTIONAL MATCH (w)-[r:SENT]->() RETURN count(DISTINCT w) AS wallets, count(r) AS txs",
             ws=workspace.current()
@@ -422,7 +458,7 @@ def get_summary_stats():
 
 
 def get_data_window_stats():
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH (:Wallet {ws: $ws})-[r:SENT]->()
@@ -453,7 +489,7 @@ def get_data_window_stats():
 
 
 def get_hub_wallets(limit=1000):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH (w:Wallet {ws: $ws})-[r:SENT]-()
@@ -465,7 +501,7 @@ def get_hub_wallets(limit=1000):
 
 
 def get_fanout_wallets(min_recipients=4, limit=1000):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH (a:Wallet {ws: $ws})-[:SENT]->(b:Wallet)
@@ -479,7 +515,7 @@ def get_fanout_wallets(min_recipients=4, limit=1000):
 
 
 def get_peel_chains(limit=1000):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH (mid:Wallet {ws: $ws})-[r2:SENT]->(next1:Wallet)
@@ -501,7 +537,7 @@ def get_peel_chains(limit=1000):
 
 
 def get_round_number_transactions(min_value=1.0, limit=1000):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH (a:Wallet {ws: $ws})-[r:SENT]->(b:Wallet)
@@ -515,7 +551,7 @@ def get_round_number_transactions(min_value=1.0, limit=1000):
 
 
 def get_circular_flows(max_hops=4, limit=1000):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH path = (a:Wallet {ws: $ws})-[:SENT*2..%d]->(a)
@@ -528,18 +564,18 @@ def get_circular_flows(max_hops=4, limit=1000):
 
 
 def get_all_wallet_addresses():
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run("MATCH (w:Wallet {ws: $ws}) RETURN w.address AS address", ws=workspace.current())
         return [r["address"] for r in result]
 
 
 def clear_graph():
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         session.run("MATCH (n:Wallet {ws: $ws}) DETACH DELETE n", ws=workspace.current())
 
 
 def load_case_edges(edges):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         for i, e in enumerate(edges):
             synthetic_hash = hashlib.sha256(
                 f"{e['from']}-{e['to']}-{e['value']}-{i}".encode()
@@ -556,7 +592,7 @@ def load_case_edges(edges):
 
 
 def get_paths_between(source, destination, max_hops=6, limit=10):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH (a:Wallet {ws: $ws}), (b:Wallet {ws: $ws})
@@ -574,7 +610,7 @@ def get_paths_between(source, destination, max_hops=6, limit=10):
 
 
 def get_last_certificate():
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         result = session.run(
             """
             MATCH (c:Certificate)
@@ -589,7 +625,7 @@ def get_last_certificate():
 
 
 def store_certificate(cert_hash, prev_hash, wallet, created_at):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with neo4j_session() as session:
         session.run(
             """
             CREATE (c:Certificate {hash: $hash, prev_hash: $prev_hash, wallet: $wallet, created_at: $created_at})
