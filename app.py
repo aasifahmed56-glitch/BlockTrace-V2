@@ -1,4 +1,5 @@
 import streamlit as st
+from datetime import datetime, timezone
 import os
 import time
 import hashlib
@@ -172,29 +173,111 @@ h1, h2, h3 { font-family: 'Space Grotesk', sans-serif !important; letter-spacing
 
 # ---------------- Header ----------------
 
-st.markdown("""
-<div class="tc-hero">
-  <div class="tc-logo">TC</div>
-  <div>
-    <p class="tc-title">BlockTrace</p>
-    <p class="tc-tagline">Explainable blockchain crime investigation</p>
+data_window_str = get_data_window_stats()
+
+header_badge_html = ""
+if data_window_str:
+    header_badge_html = f'<div style="background: rgba(0, 229, 160, 0.12); border: 1px solid rgba(0, 229, 160, 0.3); color: var(--accent); padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; white-space: nowrap;">📅 {data_window_str}</div>'
+
+st.markdown(f"""
+<div class="tc-hero" style="display: flex; justify-content: space-between; align-items: center;">
+  <div style="display: flex; align-items: center; gap: 14px;">
+    <div class="tc-logo">TC</div>
+    <div>
+      <p class="tc-title">BlockTrace</p>
+      <p class="tc-tagline">Explainable blockchain crime investigation</p>
+    </div>
   </div>
+  {header_badge_html}
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------- Etherscan + Neo4j helpers ----------------
 
-def fetch_transactions(wallet_address, limit=15, chainid=1):
+
+def date_to_block(date_input, closest="after", chainid=1):
+    default_block = 0 if closest == "after" else 99999999
+    if not date_input:
+        return default_block
+    try:
+        if isinstance(date_input, str):
+            date_str = date_input.strip()
+            if not date_str:
+                return default_block
+            if len(date_str) == 10 and date_str.count("-") == 2:
+                dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                if closest == "before":
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                else:
+                    dt = dt.replace(hour=0, minute=0, second=0)
+            else:
+                cleaned = date_str.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(cleaned)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+        elif hasattr(date_input, "year") and not hasattr(date_input, "hour"):
+            dt = datetime(date_input.year, date_input.month, date_input.day, tzinfo=timezone.utc)
+            if closest == "before":
+                dt = dt.replace(hour=23, minute=59, second=59)
+        elif hasattr(date_input, "timestamp"):
+            dt = date_input
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            return default_block
+
+        unix_ts = int(dt.timestamp())
+        params = {
+            "chainid": chainid,
+            "module": "block",
+            "action": "getblocknobytime",
+            "timestamp": unix_ts,
+            "closest": closest,
+            "apikey": ETHERSCAN_API_KEY,
+        }
+        resp = requests.get(ETHERSCAN_URL, params=params, timeout=10)
+        data = resp.json()
+        if data.get("status") == "1" and data.get("result"):
+            return int(data["result"])
+        return default_block
+    except Exception:
+        return default_block
+
+
+def get_data_window_stats():
+    try:
+        with driver.session(database=NEO4J_DATABASE) as session:
+            result = session.run(
+                """
+                MATCH ()-[r:SENT]->()
+                WHERE r.timestamp IS NOT NULL
+                WITH toInteger(r.timestamp) AS ts
+                WHERE ts IS NOT NULL AND ts > 0
+                RETURN min(ts) AS min_ts, max(ts) AS max_ts
+                """
+            )
+            record = result.single()
+            if record and record["min_ts"] is not None and record["max_ts"] is not None:
+                first_date = datetime.fromtimestamp(record["min_ts"], timezone.utc).strftime("%Y-%m-%d")
+                last_date = datetime.fromtimestamp(record["max_ts"], timezone.utc).strftime("%Y-%m-%d")
+                return f"Data window: {first_date} to {last_date} (UTC)"
+            return None
+    except Exception:
+        return None
+
+def fetch_transactions(wallet_address, limit=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
     params = {
         "chainid": chainid, "module": "account", "action": "txlist",
-        "address": wallet_address, "startblock": 0, "endblock": 99999999,
-        "sort": "desc", "apikey": ETHERSCAN_API_KEY
+        "address": wallet_address, "startblock": startblock, "endblock": endblock,
+        "sort": sort, "apikey": ETHERSCAN_API_KEY
     }
     response = requests.get(ETHERSCAN_URL, params=params)
     data = response.json()
-    if data["status"] != "1":
-        return []
-    return data["result"][:limit]
+    if data.get("status") != "1":
+        return [], False
+    raw_txs = data.get("result", [])
+    hit_limit = len(raw_txs) > limit
+    return raw_txs[:limit], hit_limit
 
 
 def load_transactions(session, transactions):
@@ -229,9 +312,10 @@ def load_transactions(session, transactions):
     return new_wallets
 
 
-def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, progress_callback=None, chainid=1):
+def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, progress_callback=None, chainid=1, startblock=0, endblock=99999999, sort="desc"):
     visited = set()
     current_layer = {start_wallet}
+    limit_hit_wallets = []
     with driver.session(database=NEO4J_DATABASE) as session:
         for hop in range(hops):
             next_layer = set()
@@ -241,12 +325,17 @@ def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, progress_callback
                 visited.add(wallet)
                 if progress_callback:
                     progress_callback(f"Hop {hop+1}: fetching {wallet[:12]}...")
-                txs = fetch_transactions(wallet, limit=tx_per_wallet, chainid=chainid)
+                txs, hit_limit = fetch_transactions(
+                    wallet, limit=tx_per_wallet, chainid=chainid,
+                    startblock=startblock, endblock=endblock, sort=sort
+                )
+                if hit_limit:
+                    limit_hit_wallets.append(wallet)
                 new_wallets = load_transactions(session, txs)
                 next_layer.update(new_wallets)
                 time.sleep(0.25)
             current_layer = next_layer - visited
-    return len(visited)
+    return len(visited), limit_hit_wallets
 
 # ---------------- Analysis queries ----------------
 
@@ -356,19 +445,20 @@ def get_all_wallet_addresses():
 
 
 def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15,
-                        progress_callback=None, chainid=1):
+                        progress_callback=None, chainid=1, startblock=0, endblock=99999999, sort="desc"):
     """Like expand_from_wallet, but stops early as soon as the destination wallet is
     discovered — no point expanding the whole network if we only care about one route.
-    Returns (wallets_visited, found: bool)."""
+    Returns (wallets_visited, found: bool, limit_hit_wallets)."""
     destination_lower = destination.lower()
 
     existing = {a.lower() for a in get_all_wallet_addresses()}
     if destination_lower in existing:
-        return 0, True  # already in the graph from a previous fetch — nothing to do
+        return 0, True, []  # already in the graph from a previous fetch — nothing to do
 
     visited = set()
     current_layer = {source}
     found = False
+    limit_hit_wallets = []
     with driver.session(database=NEO4J_DATABASE) as session:
         for hop in range(max_hops):
             next_layer = set()
@@ -378,7 +468,12 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15,
                 visited.add(wallet)
                 if progress_callback:
                     progress_callback(f"Hop {hop+1}: fetching {wallet[:12]}...")
-                txs = fetch_transactions(wallet, limit=tx_per_wallet, chainid=chainid)
+                txs, hit_limit = fetch_transactions(
+                    wallet, limit=tx_per_wallet, chainid=chainid,
+                    startblock=startblock, endblock=endblock, sort=sort
+                )
+                if hit_limit:
+                    limit_hit_wallets.append(wallet)
                 new_wallets = load_transactions(session, txs)
                 next_layer.update(new_wallets)
                 if destination_lower in {w.lower() for w in new_wallets}:
@@ -387,7 +482,7 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15,
             current_layer = next_layer - visited
             if found:
                 break
-    return len(visited), found
+    return len(visited), found, limit_hit_wallets
 
 
 def get_paths_between(source, destination, max_hops=6, limit=10):
@@ -545,7 +640,11 @@ for case_name, case_info in CURATED_CASES.items():
         def progress(msg):
             status.info(msg)
         with st.spinner(f"Loading {case_name}..."):
-            visited_count = expand_from_wallet(case_info["address"], hops=2, tx_per_wallet=15, progress_callback=progress, chainid=case_info.get("chainid", 1))
+            visited_count, limited = expand_from_wallet(case_info["address"], hops=2, tx_per_wallet=15, progress_callback=progress, chainid=case_info.get("chainid", 1))
+        if limited:
+            st.session_state["wallet_limit_note"] = "Showing 15 of the wallet's transactions"
+        else:
+            st.session_state["wallet_limit_note"] = None
         status.success(f"Loaded — {visited_count} wallets traced.")
         st.rerun()
 
@@ -559,6 +658,15 @@ new_wallet = st.sidebar.text_input("Wallet address to expand from", value=st.ses
 hops = st.sidebar.slider("Hops deep", 1, 3, 2)
 tx_per_wallet = st.sidebar.slider("Transactions per wallet", 5, 30, 15)
 
+col_d1, col_d2 = st.sidebar.columns(2)
+with col_d1:
+    from_date = st.date_input("From date (UTC)", value=None, key="from_date_input", help="Optional start date for filtering transactions")
+with col_d2:
+    to_date = st.date_input("To date (UTC)", value=None, key="to_date_input", help="Optional end date for filtering transactions")
+
+sort_choice = st.sidebar.selectbox("Sort order", ["Newest first", "Oldest first"], index=0, key="sort_order_select")
+sort_param = "desc" if sort_choice == "Newest first" else "asc"
+
 if st.sidebar.button("🚀 Expand Graph"):
     if new_wallet.strip() == "":
         st.sidebar.error("Enter a wallet address first.")
@@ -567,10 +675,20 @@ if st.sidebar.button("🚀 Expand Graph"):
         def progress(msg):
             status.info(msg)
         with st.spinner("Fetching and expanding..."):
-            visited_count = expand_from_wallet(
+            chain_id = CHAIN_OPTIONS[selected_chain]
+            start_block = date_to_block(from_date, "after", chain_id) if from_date else 0
+            end_block = date_to_block(to_date, "before", chain_id) if to_date else 99999999
+            visited_count, limited_wallets = expand_from_wallet(
                 new_wallet.strip(), hops=hops, tx_per_wallet=tx_per_wallet,
-                progress_callback=progress, chainid=CHAIN_OPTIONS[selected_chain]
+                progress_callback=progress, chainid=chain_id,
+                startblock=start_block, endblock=end_block, sort=sort_param
             )
+        if limited_wallets:
+            limit_msg = f"Showing {tx_per_wallet} of the wallet's transactions"
+            st.session_state["wallet_limit_note"] = limit_msg
+            status.info(limit_msg)
+        else:
+            st.session_state["wallet_limit_note"] = None
         status.success(f"Done — visited {visited_count} wallets.")
         st.rerun()
 
@@ -593,11 +711,19 @@ if st.sidebar.button("🔍 Find Path"):
         def path_progress(msg):
             status.info(msg)
         with st.spinner("Expanding network until destination is found (or hop limit reached)..."):
-            visited_count, found = expand_until_found(
+            chain_id = CHAIN_OPTIONS[selected_chain]
+            start_block = date_to_block(from_date, "after", chain_id) if from_date else 0
+            end_block = date_to_block(to_date, "before", chain_id) if to_date else 99999999
+            visited_count, found, limited_wallets = expand_until_found(
                 path_source.strip(), path_destination.strip(),
                 max_hops=path_max_hops, tx_per_wallet=15,
-                progress_callback=path_progress, chainid=CHAIN_OPTIONS[selected_chain]
+                progress_callback=path_progress, chainid=chain_id,
+                startblock=start_block, endblock=end_block, sort=sort_param
             )
+        if limited_wallets:
+            st.session_state["wallet_limit_note"] = "Showing 15 of the wallet's transactions"
+        else:
+            st.session_state["wallet_limit_note"] = None
         if not found:
             status.warning(
                 f"Destination not reached within {path_max_hops} hops (visited {visited_count} new wallets). "
@@ -673,7 +799,8 @@ st.sidebar.header("📄 Investigation Report")
 if st.sidebar.button("Generate PDF Report"):
     with st.spinner("Generating report..."):
         report_wallet = new_wallet.strip() if new_wallet.strip() else "0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
-        generate_report(report_wallet, output_path="investigation_report.pdf")
+        dw = get_data_window_stats()
+        generate_report(report_wallet, output_path="investigation_report.pdf", data_window=dw)
 
     with open("investigation_report.pdf", "rb") as f:
         pdf_bytes = f.read()
@@ -766,6 +893,12 @@ risk_rows = compute_wallet_risk(
 # ---------------- Plain-English narrative ----------------
 
 if edges:
+    dw_display = get_data_window_stats()
+    if dw_display:
+        st.info(f"📅 **{dw_display}**")
+    if st.session_state.get("wallet_limit_note"):
+        st.caption(f"ℹ️ {st.session_state['wallet_limit_note']}")
+
     st.subheader("📖 What this trail shows")
 
     wallets_count, txs_count = get_summary_stats()

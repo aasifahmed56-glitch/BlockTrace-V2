@@ -1,10 +1,9 @@
 import axios from 'axios';
 
-// In dev, Vite proxies /api -> http://localhost:8000, so we use '/api' as the base.
-// Set VITE_API_URL to override (e.g. for production: 'https://your-api.com').
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
-// The raw backend URL is only needed to build direct download hrefs (PDF, etc.)
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+// Single source of truth for the backend URL.
+// In dev, defaults to local backend. In production (Vercel), set VITE_API_BASE_URL
+// to the Render backend URL (e.g. https://blocktrace-v2.onrender.com).
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -12,6 +11,43 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+// ==================== Access code (public mode auth) ====================
+export const getAccessCode = () => sessionStorage.getItem('bt_access_code') || '';
+export const setAccessCode = (code) => {
+  if (code) {
+    sessionStorage.setItem('bt_access_code', code);
+  } else {
+    sessionStorage.removeItem('bt_access_code');
+  }
+};
+
+// Inject X-Access-Code header on every request if one is stored
+api.interceptors.request.use((config) => {
+  const code = getAccessCode();
+  if (code) {
+    config.headers['X-Access-Code'] = code;
+  }
+  return config;
+});
+
+// ==================== Health & public endpoints ====================
+export const checkHealth = async () => {
+  const { data } = await axios.get(`${API_BASE_URL}/health`);
+  return data;
+};
+
+export const checkSanctionsPublic = async (address) => {
+  const { data } = await axios.get(`${API_BASE_URL}/sanctions/check`, {
+    params: { address },
+  });
+  return data;
+};
+
+export const fetchContracts = async () => {
+  const { data } = await axios.get(`${API_BASE_URL}/contracts`);
+  return data;
+};
 
 // Helper for formatting and displaying error messages
 export const getErrorMessage = (error) => {
@@ -25,6 +61,11 @@ export const getErrorMessage = (error) => {
     return JSON.stringify(error.response.data.detail);
   }
   return error.message || 'An unexpected error occurred';
+};
+
+// Returns true if the error is a 401 (access code required)
+export const isAccessDenied = (error) => {
+  return error?.response?.status === 401;
 };
 
 // Chains & Curated Cases
@@ -186,9 +227,8 @@ export const deleteSavedCase = async (name) => {
 };
 
 export const getReportUrl = (startWallet) => {
-  // Use BACKEND_URL (direct to FastAPI) since this is a browser anchor href,
-  // not an Axios request through the Vite proxy.
-  return `${BACKEND_URL}/report${startWallet ? `?start_wallet=${encodeURIComponent(startWallet)}` : ''}`;
+  // Direct link to the backend for browser download (not through axios).
+  return `${API_BASE_URL}/report${startWallet ? `?start_wallet=${encodeURIComponent(startWallet)}` : ''}`;
 };
 
 export const publishReport = async (startWallet) => {

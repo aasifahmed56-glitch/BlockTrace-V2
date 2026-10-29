@@ -9,6 +9,7 @@ import { FindingsScreen } from './screens/FindingsScreen';
 import { CertificatesScreen } from './screens/CertificatesScreen';
 import { CasesScreen } from './screens/CasesScreen';
 import { VerifyReportScreen } from './screens/VerifyReportScreen';
+import { PrivacyScreen } from './screens/PrivacyScreen';
 
 const MainLayout = () => {
   const { activeTab } = useInvestigation();
@@ -92,6 +93,11 @@ const MainLayout = () => {
 };
 
 export function App() {
+  // Render static /privacy route outside the InvestigationProvider (no API calls needed)
+  if (window.location.pathname === '/privacy' || window.location.pathname === '/privacy/') {
+    return <PrivacyScreen />;
+  }
+
   return (
     <InvestigationProvider>
       <MainLayout />

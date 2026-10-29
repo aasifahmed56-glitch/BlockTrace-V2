@@ -299,7 +299,7 @@ def build_report_styles():
 
 # ---- Component Builders ----
 
-def build_header_band(start_wallet, generated_time_str=None, styles=None, investigation_id=None, target_label=None):
+def build_header_band(start_wallet, generated_time_str=None, styles=None, investigation_id=None, target_label=None, data_window=None):
     """Draws the top Page 1 full-width dark brown header band and metadata card."""
     if styles is None:
         styles = build_report_styles()
@@ -363,6 +363,18 @@ def build_header_band(start_wallet, generated_time_str=None, styles=None, invest
             ]
         ]
         meta_table_style.append(('SPAN', (0, 1), (1, 1)))
+
+    if data_window:
+        dw_display = data_window.strip()
+        if not dw_display.lower().startswith("data window:"):
+            dw_display = f"Data window: {dw_display}"
+        dw_val = dw_display[len("Data window:"):].strip() if dw_display.lower().startswith("data window:") else dw_display
+        row_idx = len(meta_rows)
+        meta_rows.append([
+            Paragraph(f"<b>DATA WINDOW:</b> {dw_val}", styles['TableCell']),
+            "",
+        ])
+        meta_table_style.append(('SPAN', (0, row_idx), (1, row_idx)))
 
     if investigation_id:
         meta_rows.append([

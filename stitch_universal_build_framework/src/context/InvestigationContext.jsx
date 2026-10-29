@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   fetchChains,
   fetchCuratedCases,
@@ -12,7 +12,11 @@ import {
   fetchPeelDetections,
   fetchRoundDetections,
   fetchCircularDetections,
+  checkHealth,
   getErrorMessage,
+  isAccessDenied,
+  getAccessCode,
+  setAccessCode as saveAccessCode,
 } from '../api/client';
 
 const InvestigationContext = createContext(null);
@@ -20,6 +24,19 @@ const InvestigationContext = createContext(null);
 export const InvestigationProvider = ({ children }) => {
   // Navigation
   const [activeTab, setActiveTab] = useState('investigate'); // 'landing' | 'investigate' | 'findings' | 'certificates' | 'cases-reports'
+
+  // Public mode state
+  const [publicMode, setPublicMode] = useState(false);
+  const [accessCode, setAccessCodeState] = useState(getAccessCode());
+  const [serverWaking, setServerWaking] = useState(false);
+  const [serverReady, setServerReady] = useState(false);
+
+  const isLocked = publicMode && !accessCode;
+
+  const setAccessCode = useCallback((code) => {
+    saveAccessCode(code);
+    setAccessCodeState(code);
+  }, []);
 
   // Core Data
   const [chains, setChains] = useState(['Ethereum', 'BNB Smart Chain', 'Polygon']);
@@ -65,6 +82,61 @@ export const InvestigationProvider = ({ children }) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  // ==================== Server health check & wake-up ====================
+  useEffect(() => {
+    let cancelled = false;
+    const wakeTimer = setTimeout(() => {
+      if (!cancelled) setServerWaking(true);
+    }, 5000);
+
+    const doHealthCheck = async () => {
+      try {
+        const data = await checkHealth();
+        if (!cancelled) {
+          setPublicMode(data.public_mode === true);
+          setServerReady(true);
+          setServerWaking(false);
+        }
+      } catch (err) {
+        // Retry once on network failure (Render cold start)
+        if (!cancelled) {
+          try {
+            const data = await checkHealth();
+            if (!cancelled) {
+              setPublicMode(data.public_mode === true);
+              setServerReady(true);
+              setServerWaking(false);
+            }
+          } catch {
+            if (!cancelled) {
+              setServerWaking(false);
+              console.error('Server health check failed after retry:', err);
+            }
+          }
+        }
+      }
+    };
+
+    doHealthCheck();
+    return () => {
+      cancelled = true;
+      clearTimeout(wakeTimer);
+    };
+  }, []);
+
+  // ==================== Handle 401 errors globally ====================
+  const handle401 = useCallback((err) => {
+    if (isAccessDenied(err)) {
+      showToast(
+        'Access restricted. Enter your access code to unlock the full workspace.',
+        'warning',
+        6000,
+      );
+      return true;
+    }
+    return false;
+  }, [showToast]);
+
   // Fetch initial setup (chains & curated cases)
   useEffect(() => {
     const initSetup = async () => {
@@ -80,11 +152,14 @@ export const InvestigationProvider = ({ children }) => {
           setCuratedCases(caseList.value);
         }
       } catch (err) {
-        console.error('Failed to initialize metadata:', err);
+        // In public mode without code, chains/curated-cases will 401 — that's expected
+        if (!handle401(err)) {
+          console.error('Failed to initialize metadata:', err);
+        }
       }
     };
     initSetup();
-  }, []);
+  }, [handle401]);
 
   // Refresh graph and summary
   const refreshGraphAndSummary = useCallback(async () => {
@@ -103,12 +178,14 @@ export const InvestigationProvider = ({ children }) => {
       }
       return graphEdges;
     } catch (err) {
-      console.error('Error fetching graph/summary:', err);
-      showToast(getErrorMessage(err), 'error');
+      if (!handle401(err)) {
+        console.error('Error fetching graph/summary:', err);
+        showToast(getErrorMessage(err), 'error');
+      }
     } finally {
       setIsLoadingGraph(false);
     }
-  }, [showToast]);
+  }, [showToast, handle401]);
 
   // Refresh all findings data
   const refreshFindings = useCallback(async (customStartWallet) => {
@@ -157,11 +234,13 @@ export const InvestigationProvider = ({ children }) => {
       });
       setEntityLabels(labelsMap);
     } catch (err) {
-      console.error('Error fetching findings:', err);
+      if (!handle401(err)) {
+        console.error('Error fetching findings:', err);
+      }
     } finally {
       setIsLoadingFindings(false);
     }
-  }, [startWallet, edges]);
+  }, [startWallet, edges, handle401]);
 
   // Load everything on initial app mount
   useEffect(() => {
@@ -216,6 +295,14 @@ export const InvestigationProvider = ({ children }) => {
     removeToast,
     refreshGraphAndSummary,
     refreshFindings,
+    // Public mode
+    publicMode,
+    accessCode,
+    setAccessCode,
+    isPublicLocked: isLocked,
+    serverWaking,
+    serverReady,
+    handle401,
   };
 
   return (

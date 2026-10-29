@@ -55,6 +55,24 @@ def get_summary_stats(session):
     return record["wallets"], record["txs"]
 
 
+def get_data_window(session):
+    result = session.run(
+        """
+        MATCH ()-[r:SENT]->()
+        WHERE r.timestamp IS NOT NULL
+        WITH toInteger(r.timestamp) AS ts
+        WHERE ts IS NOT NULL AND ts > 0
+        RETURN min(ts) AS min_ts, max(ts) AS max_ts
+        """
+    )
+    record = result.single()
+    if record and record["min_ts"] is not None and record["max_ts"] is not None:
+        first_date = datetime.fromtimestamp(record["min_ts"], timezone.utc).strftime("%Y-%m-%d")
+        last_date = datetime.fromtimestamp(record["max_ts"], timezone.utc).strftime("%Y-%m-%d")
+        return f"Data window: {first_date} to {last_date} (UTC)"
+    return None
+
+
 def get_hub_wallets(session, top_n=10):
     result = session.run(
         """
@@ -138,7 +156,7 @@ def narrative_to_reportlab_markup(html_text):
     return text
 
 
-def generate_report(start_wallet, output_path="investigation_report.pdf", certificate_info=None):
+def generate_report(start_wallet, output_path="investigation_report.pdf", certificate_info=None, data_window=None):
     """Generates the official BlockTrace forensic PDF dossier.
 
     Args:
@@ -169,12 +187,15 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
     if certificate_info and certificate_info.get("certificate_hash"):
         inv_id = certificate_info["certificate_hash"]
 
-    # 1. Header Band & Metadata Block
-    elements.append(build_header_band(start_wallet, gen_time_str, styles, investigation_id=inv_id))
-    elements.append(Spacer(1, 10))
+
+
+
 
     with driver.session(database=NEO4J_DATABASE) as session:
         wallets, txs = get_summary_stats(session)
+        dw = data_window or get_data_window(session)
+        elements.append(build_header_band(start_wallet, gen_time_str, styles, investigation_id=inv_id, data_window=dw))
+        elements.append(Spacer(1, 10))
         hub_data = get_hub_wallets(session)
         fanout_data = get_fanout_wallets(session)
         peel_data = get_peel_chains(session)
@@ -232,6 +253,7 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
             accent_color=COLOR_PRIMARY_ACCENT, bg_color=COLOR_BG_CREAM, styles=styles
         ))
         elements.append(Spacer(1, 10))
+    
 
         def add_section(title, subtitle, content_flowable, accent_color):
             hdr = build_section_header(title, subtitle, accent_color=accent_color, styles=styles)
@@ -240,7 +262,7 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
             else:
                 block = SectionBlock(hdr, content_flowable, min_rows=3)
                 elements.append(block)
-            elements.append(Spacer(1, 10))
+        
 
         # 4. Sanctions Screening
         if sanctions_matches:
@@ -470,7 +492,7 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
                 "Certificate of Integrity", cert_flowables,
                 accent_color=COLOR_PRIMARY_DARK, bg_color=COLOR_BG_CREAM, styles=styles
             ))
-            elements.append(Spacer(1, 10))
+        
 
         # 12. Verification Instructions Callout Box
         verify_flowables = [
@@ -486,6 +508,7 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
             "How to Verify This Report", verify_flowables,
             accent_color=COLOR_PRIMARY_ACCENT, bg_color=COLOR_BG_CREAM, styles=styles
         ))
+        elements.append(Spacer(1, 10))
         elements.append(Spacer(1, 12))
 
         # 13. Final Disclaimer Paragraph

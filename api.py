@@ -18,6 +18,10 @@ import time
 import hashlib
 import json as jsonlib
 from typing import Optional, List
+import hmac
+import re as re_module
+from collections import defaultdict
+from threading import Lock
 
 import requests
 from dotenv import load_dotenv
@@ -62,6 +66,12 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE")
 ETHERSCAN_URL = "https://api.etherscan.io/v2/api"
 
+# ==================== Public deployment mode ====================
+PUBLIC_MODE = os.getenv("PUBLIC_MODE", "false").lower() == "true"
+ACCESS_CODE = os.getenv("ACCESS_CODE", "")
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+ALLOW_EXT_ORIGINS = [o.strip() for o in os.getenv("ALLOW_EXTENSION_ORIGINS", "").split(",") if o.strip()]
+
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 CHAIN_OPTIONS = {
@@ -98,14 +108,83 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Dev-friendly CORS: allows any frontend (React dev server, etc.) to call this API.
-# Tighten allow_origins to your actual frontend URL before deploying publicly.
+# CORS: use CORS_ORIGINS env in public mode, allow all in local dev.
+_cors_origins = CORS_ORIGINS + ALLOW_EXT_ORIGINS if PUBLIC_MODE else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-Access-Code", "Content-Type"],
 )
+
+
+# ==================== In-memory rate limiter ====================
+_rate_limit_store: dict = defaultdict(list)
+_rate_limit_lock = Lock()
+RATE_LIMIT = 30   # max requests
+RATE_WINDOW = 60  # per this many seconds
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Returns True if the request is allowed, False if rate-limited."""
+    now = time.time()
+    with _rate_limit_lock:
+        timestamps = _rate_limit_store[ip]
+        timestamps[:] = [t for t in timestamps if now - t < RATE_WINDOW]
+        if len(timestamps) >= RATE_LIMIT:
+            return False
+        timestamps.append(now)
+        return True
+
+
+# ==================== Access-code dependency ====================
+from fastapi import Depends, Header, Request
+from fastapi.responses import JSONResponse
+
+
+async def require_access_code(x_access_code: Optional[str] = Header(None)):
+    """FastAPI dependency that enforces access-code auth in PUBLIC_MODE.
+    When PUBLIC_MODE is False (local dev), all requests pass through unchanged."""
+    if not PUBLIC_MODE:
+        return  # local mode — no check needed
+    if not ACCESS_CODE:
+        return  # public mode but no code configured — allow (fail-open for dev)
+    if not x_access_code or not hmac.compare_digest(x_access_code, ACCESS_CODE):
+        raise HTTPException(
+            status_code=401,
+            detail="Access code required. Enter your access code to use the full workspace."
+        )
+
+
+# ==================== Rate-limit middleware for public endpoints ====================
+_PUBLIC_PATHS = {"/health", "/contracts", "/sanctions/check", "/report/verify", "/api/report/verify"}
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if PUBLIC_MODE and request.url.path in _PUBLIC_PATHS:
+        ip = request.client.host if request.client else "unknown"
+        if not _check_rate_limit(ip):
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Please wait before retrying."},
+                headers={"Retry-After": "60"},
+            )
+    response = await call_next(request)
+    return response
+
+
+# ==================== Generic error handler (suppress stack traces in public mode) ====================
+
+@app.exception_handler(Exception)
+async def _generic_exception_handler(request: Request, exc: Exception):
+    if PUBLIC_MODE:
+        # Log server-side for debugging but never expose internals to the client
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": "An internal error occurred."})
+    # Local dev: let FastAPI show its default debug page
+    raise exc
 
 
 # ==================== Request/response models ====================
@@ -113,6 +192,9 @@ app.add_middleware(
 class ExpandRequest(BaseModel):
     wallet: str
     hops: int = Field(2, ge=1, le=3)
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    sort: Optional[str] = "desc"
     tx_per_wallet: int = Field(15, ge=5, le=30)
     chain: str = "Ethereum"
 
@@ -121,6 +203,9 @@ class PathRequest(BaseModel):
     source: str
     destination: str
     max_hops: int = Field(4, ge=1, le=6)
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    sort: Optional[str] = "desc"
     tx_per_wallet: int = Field(15, ge=5, le=30)
     chain: str = "Ethereum"
 
@@ -149,17 +234,67 @@ class PublishReportRequest(BaseModel):
 # ==================== Etherscan + Neo4j data layer ====================
 # (Same logic as the old app.py — just with no Streamlit calls mixed in.)
 
-def fetch_transactions(wallet_address, limit=15, chainid=1):
+def date_to_block(date_input, closest="after", chainid=1):
+    default_block = 0 if closest == "after" else 99999999
+    if not date_input:
+        return default_block
+    try:
+        if isinstance(date_input, str):
+            date_str = date_input.strip()
+            if not date_str:
+                return default_block
+            if len(date_str) == 10 and date_str.count("-") == 2:
+                dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                if closest == "before":
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                else:
+                    dt = dt.replace(hour=0, minute=0, second=0)
+            else:
+                cleaned = date_str.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(cleaned)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+        elif hasattr(date_input, "year") and not hasattr(date_input, "hour"):
+            dt = datetime(date_input.year, date_input.month, date_input.day, tzinfo=timezone.utc)
+            if closest == "before":
+                dt = dt.replace(hour=23, minute=59, second=59)
+        elif hasattr(date_input, "timestamp"):
+            dt = date_input
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            return default_block
+
+        unix_ts = int(dt.timestamp())
+        params = {
+            "chainid": chainid,
+            "module": "block",
+            "action": "getblocknobytime",
+            "timestamp": unix_ts,
+            "closest": closest,
+            "apikey": ETHERSCAN_API_KEY,
+        }
+        resp = requests.get(ETHERSCAN_URL, params=params, timeout=10)
+        data = resp.json()
+        if data.get("status") == "1" and data.get("result"):
+            return int(data["result"])
+        return default_block
+    except Exception:
+        return default_block
+
+def fetch_transactions(wallet_address, limit=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
     params = {
         "chainid": chainid, "module": "account", "action": "txlist",
-        "address": wallet_address, "startblock": 0, "endblock": 99999999,
-        "sort": "desc", "apikey": ETHERSCAN_API_KEY
+        "address": wallet_address, "startblock": startblock, "endblock": endblock,
+        "sort": sort, "apikey": ETHERSCAN_API_KEY
     }
     response = requests.get(ETHERSCAN_URL, params=params)
     data = response.json()
-    if data["status"] != "1":
-        return []
-    return data["result"][:limit]
+    if data.get("status") != "1":
+        return [], False
+    raw_txs = data.get("result", [])
+    hit_limit = len(raw_txs) > limit
+    return raw_txs[:limit], hit_limit
 
 
 def load_transactions(session, transactions):
@@ -192,9 +327,10 @@ def load_transactions(session, transactions):
     return new_wallets
 
 
-def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1):
+def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
     visited = set()
     current_layer = {start_wallet}
+    limit_hit_wallets = []
     with driver.session(database=NEO4J_DATABASE) as session:
         for hop in range(hops):
             next_layer = set()
@@ -202,23 +338,29 @@ def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1):
                 if wallet in visited:
                     continue
                 visited.add(wallet)
-                txs = fetch_transactions(wallet, limit=tx_per_wallet, chainid=chainid)
+                txs, hit_limit = fetch_transactions(
+                    wallet, limit=tx_per_wallet, chainid=chainid,
+                    startblock=startblock, endblock=endblock, sort=sort
+                )
+                if hit_limit:
+                    limit_hit_wallets.append(wallet)
                 new_wallets = load_transactions(session, txs)
                 next_layer.update(new_wallets)
                 time.sleep(0.25)
             current_layer = next_layer - visited
-    return len(visited)
+    return len(visited), limit_hit_wallets
 
 
-def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chainid=1):
+def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
     destination_lower = destination.lower()
     existing = {a.lower() for a in get_all_wallet_addresses()}
     if destination_lower in existing:
-        return 0, True
+        return 0, True, []
 
     visited = set()
     current_layer = {source}
     found = False
+    limit_hit_wallets = []
     with driver.session(database=NEO4J_DATABASE) as session:
         for hop in range(max_hops):
             next_layer = set()
@@ -226,7 +368,12 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
                 if wallet in visited:
                     continue
                 visited.add(wallet)
-                txs = fetch_transactions(wallet, limit=tx_per_wallet, chainid=chainid)
+                txs, hit_limit = fetch_transactions(
+                    wallet, limit=tx_per_wallet, chainid=chainid,
+                    startblock=startblock, endblock=endblock, sort=sort
+                )
+                if hit_limit:
+                    limit_hit_wallets.append(wallet)
                 new_wallets = load_transactions(session, txs)
                 next_layer.update(new_wallets)
                 if destination_lower in {w.lower() for w in new_wallets}:
@@ -235,7 +382,7 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
             current_layer = next_layer - visited
             if found:
                 break
-    return len(visited), found
+    return len(visited), found, limit_hit_wallets
 
 
 def get_graph_data(limit=300):
@@ -254,6 +401,37 @@ def get_summary_stats():
         )
         record = result.single()
         return record["wallets"], record["txs"]
+
+
+def get_data_window_stats():
+    with driver.session(database=NEO4J_DATABASE) as session:
+        result = session.run(
+            """
+            MATCH ()-[r:SENT]->()
+            WHERE r.timestamp IS NOT NULL
+            WITH toInteger(r.timestamp) AS ts
+            WHERE ts IS NOT NULL AND ts > 0
+            RETURN min(ts) AS min_ts, max(ts) AS max_ts
+            """
+        )
+        record = result.single()
+        if record and record["min_ts"] is not None and record["max_ts"] is not None:
+            first_date = datetime.fromtimestamp(record["min_ts"], timezone.utc).strftime("%Y-%m-%d")
+            last_date = datetime.fromtimestamp(record["max_ts"], timezone.utc).strftime("%Y-%m-%d")
+            return {
+                "data_window": f"Data window: {first_date} to {last_date} (UTC)",
+                "earliest_timestamp": record["min_ts"],
+                "latest_timestamp": record["max_ts"],
+                "first_date": first_date,
+                "last_date": last_date,
+            }
+        return {
+            "data_window": None,
+            "earliest_timestamp": None,
+            "latest_timestamp": None,
+            "first_date": None,
+            "last_date": None,
+        }
 
 
 def get_hub_wallets(limit=1000):
@@ -410,17 +588,59 @@ def _resolve_chainid(chain_name):
 
 # ==================== Endpoints ====================
 
+# ==================== Public endpoints (no access code required) ====================
+
 @app.get("/")
-def health_check():
-    return {"status": "ok", "service": "BlockTrace API"}
+def root():
+    """Lightweight root endpoint — same as /health but with a service label."""
+    return {"status": "ok", "service": "BlockTrace API", "public_mode": PUBLIC_MODE}
 
 
-@app.get("/chains")
+@app.get("/health")
+def health():
+    """Fast health check with zero DB/network calls — used to wake Render free tier."""
+    return {"status": "ok", "public_mode": PUBLIC_MODE}
+
+
+@app.get("/contracts")
+def contracts():
+    """Returns smart contract addresses and Sepolia explorer links — no secrets."""
+    return {
+        "registry_contract": os.getenv("CONTRACT_ADDRESS", ""),
+        "registry_explorer_url": f"https://sepolia.etherscan.io/address/{os.getenv('CONTRACT_ADDRESS', '')}",
+        "case_contract": os.getenv("CASE_CONTRACT_ADDRESS", ""),
+        "case_explorer_url": f"https://sepolia.etherscan.io/address/{os.getenv('CASE_CONTRACT_ADDRESS', '')}",
+        "network": "Ethereum Sepolia (Chain ID 11155111)",
+    }
+
+
+@app.get("/sanctions/check")
+def sanctions_check(address: str):
+    """Public sanctions screening — looks up a single address against the built-in
+    OFAC-based list. No Etherscan or Neo4j calls."""
+    if not re_module.match(r'^0x[0-9a-fA-F]{40}$', address):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Ethereum address. Must be 0x followed by 40 hex characters.",
+        )
+    from logic import SANCTIONED_ADDRESSES
+    normalized = address.lower()
+    match = SANCTIONED_ADDRESSES.get(normalized)
+    return {
+        "address": address,
+        "sanctioned": match is not None,
+        "label": match.get("name") if match else None,
+        "source": "built-in OFAC-based list",
+        "note": "Indicator only; the list may be outdated. Verify with official OFAC sources.",
+    }
+
+
+@app.get("/chains", dependencies=[Depends(require_access_code)])
 def list_chains():
     return {"chains": list(CHAIN_OPTIONS.keys())}
 
 
-@app.get("/curated-cases")
+@app.get("/curated-cases", dependencies=[Depends(require_access_code)])
 def list_curated_cases():
     return {
         "cases": [
@@ -430,72 +650,114 @@ def list_curated_cases():
     }
 
 
-@app.post("/curated-cases/{case_name}/load")
+@app.post("/curated-cases/{case_name}/load", dependencies=[Depends(require_access_code)])
 def load_curated_case(case_name: str):
     if case_name not in CURATED_CASES:
         raise HTTPException(status_code=404, detail="Unknown curated case name.")
     info = CURATED_CASES[case_name]
-    visited = expand_from_wallet(info["address"], hops=2, tx_per_wallet=15, chainid=info["chainid"])
-    return {"wallets_visited": visited, "start_wallet": info["address"]}
+    visited, limited = expand_from_wallet(info["address"], hops=2, tx_per_wallet=15, chainid=info["chainid"])
+    dw = get_data_window_stats()
+    note = f"Showing 15 of the wallet's transactions" if limited else None
+    return {
+        "wallets_visited": visited,
+        "start_wallet": info["address"],
+        "hit_limit": len(limited) > 0,
+        "limit_note": note,
+        "limited_wallets": limited,
+        "data_window": dw["data_window"],
+    }
 
 
-@app.post("/expand")
+
+
+@app.post("/expand", dependencies=[Depends(require_access_code)])
 def expand(req: ExpandRequest):
     chainid = _resolve_chainid(req.chain)
-    visited = expand_from_wallet(req.wallet, hops=req.hops, tx_per_wallet=req.tx_per_wallet, chainid=chainid)
-    return {"wallets_visited": visited, "start_wallet": req.wallet}
+    startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
+    endblock = date_to_block(req.to_date, "before", chainid) if req.to_date else 99999999
+    sort_order = "asc" if (req.sort and req.sort.lower() in ("asc", "oldest", "oldest first")) else "desc"
+    visited, limited = expand_from_wallet(
+        req.wallet, hops=req.hops, tx_per_wallet=req.tx_per_wallet, chainid=chainid,
+        startblock=startblock, endblock=endblock, sort=sort_order
+    )
+    dw = get_data_window_stats()
+    note = f"Showing {req.tx_per_wallet} of the wallet's transactions" if limited else None
+    return {
+        "wallets_visited": visited,
+        "start_wallet": req.wallet,
+        "hit_limit": len(limited) > 0,
+        "limit_note": note,
+        "limited_wallets": limited,
+        "data_window": dw["data_window"],
+        "earliest_timestamp": dw["earliest_timestamp"],
+        "latest_timestamp": dw["latest_timestamp"],
+    }
 
 
-@app.post("/clear")
+
+
+@app.post("/clear", dependencies=[Depends(require_access_code)])
 def clear():
     clear_graph()
     return {"status": "cleared"}
 
 
-@app.get("/summary")
+@app.get("/summary", dependencies=[Depends(require_access_code)])
 def summary():
     wallets, txs = get_summary_stats()
-    return {"wallets_traced": wallets, "transactions_mapped": txs}
+    dw = get_data_window_stats()
+    return {
+        "wallets_traced": wallets,
+        "transactions_mapped": txs,
+        "data_window": dw["data_window"],
+        "earliest_timestamp": dw["earliest_timestamp"],
+        "latest_timestamp": dw["latest_timestamp"],
+    }
 
 
-@app.get("/graph")
+@app.get("/data-window", dependencies=[Depends(require_access_code)])
+def data_window_endpoint():
+    return get_data_window_stats()
+
+
+@app.get("/graph", dependencies=[Depends(require_access_code)])
 def graph():
     edges = get_graph_data()
     return {"edges": [{"from": f, "to": t, "value": v} for f, t, v in edges]}
 
 
-@app.get("/detections/hub")
+@app.get("/detections/hub", dependencies=[Depends(require_access_code)])
 def detections_hub():
     return {"results": [{"wallet": w, "total_txs": c, "label": get_entity_label(w)} for w, c in get_hub_wallets()]}
 
 
-@app.get("/detections/fanout")
+@app.get("/detections/fanout", dependencies=[Depends(require_access_code)])
 def detections_fanout():
     return {"results": [{"wallet": w, "distinct_recipients": c, "label": get_entity_label(w)} for w, c in get_fanout_wallets()]}
 
 
-@app.get("/detections/peel-chains")
+@app.get("/detections/peel-chains", dependencies=[Depends(require_access_code)])
 def detections_peel():
     return {"results": [{"wallet": w, "main_amount": m, "peel_amount": p, "label": get_entity_label(w)} for w, m, p in get_peel_chains()]}
 
 
-@app.get("/detections/round-number")
+@app.get("/detections/round-number", dependencies=[Depends(require_access_code)])
 def detections_round():
     return {"results": [{"from": f, "to": t, "value": v} for f, t, v in get_round_number_transactions()]}
 
 
-@app.get("/detections/circular")
+@app.get("/detections/circular", dependencies=[Depends(require_access_code)])
 def detections_circular():
     return {"results": [{"wallet": w, "hops": h, "label": get_entity_label(w)} for w, h in get_circular_flows()]}
 
 
-@app.get("/sanctions")
+@app.get("/sanctions", dependencies=[Depends(require_access_code)])
 def sanctions():
     matches = check_sanctions(get_all_wallet_addresses())
     return {"matches": [{"wallet": addr, **entry} for addr, entry in matches]}
 
 
-@app.get("/risk")
+@app.get("/risk", dependencies=[Depends(require_access_code)])
 def risk():
     hub_data = get_hub_wallets()
     fanout_data = get_fanout_wallets()
@@ -516,7 +778,7 @@ def risk():
     return {"results": result}
 
 
-@app.get("/narrative")
+@app.get("/narrative", dependencies=[Depends(require_access_code)])
 def narrative(start_wallet: Optional[str] = None):
     hub_data = get_hub_wallets()
     fanout_data = get_fanout_wallets()
@@ -539,27 +801,32 @@ def narrative(start_wallet: Optional[str] = None):
     return {"paragraphs": paragraphs}
 
 
-@app.post("/path")
+@app.post("/path", dependencies=[Depends(require_access_code)])
 def find_path(req: PathRequest):
     chainid = _resolve_chainid(req.chain)
-    visited, found = expand_until_found(
+    startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
+    endblock = date_to_block(req.to_date, "before", chainid) if req.to_date else 99999999
+    sort_order = "asc" if (req.sort and req.sort.lower() in ("asc", "oldest", "oldest first")) else "desc"
+    visited, found, limited = expand_until_found(
         req.source, req.destination, max_hops=req.max_hops,
-        tx_per_wallet=req.tx_per_wallet, chainid=chainid
+        tx_per_wallet=req.tx_per_wallet, chainid=chainid,
+        startblock=startblock, endblock=endblock, sort=sort_order
     )
+    limit_note = f"Showing {req.tx_per_wallet} of the wallet's transactions" if limited else None
     if not found:
-        return {"found": False, "wallets_visited": visited, "paths": []}
+        return {"found": False, "wallets_visited": visited, "paths": [], "hit_limit": len(limited) > 0, "limit_note": limit_note}
 
     paths = get_paths_between(req.source, req.destination, max_hops=req.max_hops)
-    return {"found": len(paths) > 0, "wallets_visited": visited, "paths": paths}
+    return {"found": len(paths) > 0, "wallets_visited": visited, "paths": paths, "hit_limit": len(limited) > 0, "limit_note": limit_note}
 
 
-@app.get("/cases")
+@app.get("/cases", dependencies=[Depends(require_access_code)])
 def list_cases():
     cases = case_manager.list_cases()
     return {"cases": cases}
 
 
-@app.post("/cases")
+@app.post("/cases", dependencies=[Depends(require_access_code)])
 def save_case(req: SaveCaseRequest):
     edges = get_graph_data()
     if not edges:
@@ -713,8 +980,8 @@ def save_case(req: SaveCaseRequest):
     return response
 
 
-@app.post("/cases/{case_number}/anchor")
-@app.post("/api/cases/{case_number}/anchor")
+@app.post("/cases/{case_number}/anchor", dependencies=[Depends(require_access_code)])
+@app.post("/api/cases/{case_number}/anchor", dependencies=[Depends(require_access_code)])
 def retry_anchor_case(case_number: str):
     case_data = case_manager.load_case(case_number)
     if not case_data:
@@ -798,8 +1065,8 @@ def retry_anchor_case(case_number: str):
         raise HTTPException(status_code=502, detail=f"On-chain anchor failed: {exc}")
 
 
-@app.post("/cases/{case_number}/reanchor")
-@app.post("/api/cases/{case_number}/reanchor")
+@app.post("/cases/{case_number}/reanchor", dependencies=[Depends(require_access_code)])
+@app.post("/api/cases/{case_number}/reanchor", dependencies=[Depends(require_access_code)])
 def reanchor_case(case_number: str):
     """Re-anchors a case (e.g. a legacy unencrypted case) with an AES-256-GCM encrypted snapshot.
 
@@ -871,8 +1138,8 @@ def reanchor_case(case_number: str):
         raise HTTPException(status_code=502, detail=f"On-chain re-anchor failed: {exc}")
 
 
-@app.get("/cases/{case_number}/verify")
-@app.get("/api/cases/{case_number}/verify")
+@app.get("/cases/{case_number}/verify", dependencies=[Depends(require_access_code)])
+@app.get("/api/cases/{case_number}/verify", dependencies=[Depends(require_access_code)])
 def verify_case_endpoint(case_number: str):
     case_data = case_manager.load_case(case_number)
     if not case_data:
@@ -1003,7 +1270,7 @@ def verify_case_endpoint(case_number: str):
     }
 
 
-@app.post("/cases/{name}/load")
+@app.post("/cases/{name}/load", dependencies=[Depends(require_access_code)])
 def load_case(name: str):
     case_data = case_manager.load_case(name)
     if not case_data:
@@ -1022,7 +1289,7 @@ def load_case(name: str):
     }
 
 
-@app.delete("/cases/{name}")
+@app.delete("/cases/{name}", dependencies=[Depends(require_access_code)])
 def delete_case(name: str):
     deleted = case_manager.delete_case(name)
     if not deleted:
@@ -1030,7 +1297,7 @@ def delete_case(name: str):
     return {"status": "deleted"}
 
 
-@app.post("/certificate")
+@app.post("/certificate", dependencies=[Depends(require_access_code)])
 def issue_certificate(req: CertificateRequest):
     edges = get_graph_data()
     if not edges:
@@ -1075,21 +1342,22 @@ def issue_certificate(req: CertificateRequest):
     }
 
 
-@app.post("/certificate/verify")
+@app.post("/certificate/verify", dependencies=[Depends(require_access_code)])
 def verify_cert(req: CertificateVerifyRequest):
     is_valid = verify_certificate(req.payload, req.previous_hash, req.certificate_hash)
     return {"valid": is_valid}
 
 
-@app.get("/report")
+@app.get("/report", dependencies=[Depends(require_access_code)])
 def report(start_wallet: Optional[str] = None):
     wallet = start_wallet or "0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
     output_path = "investigation_report.pdf"
-    generate_report(wallet, output_path=output_path)
+    dw = get_data_window_stats()["data_window"]
+    generate_report(wallet, output_path=output_path, data_window=dw)
     return FileResponse(output_path, media_type="application/pdf", filename="investigation_report.pdf")
 
 
-@app.post("/report/publish")
+@app.post("/report/publish", dependencies=[Depends(require_access_code)])
 def publish_report(req: PublishReportRequest):
     """Generate the PDF report, upload it to IPFS via Pinata, and store the
     investigation hash + IPFS CID on the Sepolia testnet via the
@@ -1138,7 +1406,8 @@ def publish_report(req: PublishReportRequest):
     # --- 3. Generate the PDF ---
     import tempfile
     pdf_path = os.path.join(tempfile.gettempdir(), "blocktrace_publish_report.pdf")
-    generate_report(start_wallet, output_path=pdf_path)
+    dw = get_data_window_stats()["data_window"]
+    generate_report(start_wallet, output_path=pdf_path, data_window=dw)
 
     with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()

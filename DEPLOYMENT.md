@@ -1,0 +1,157 @@
+# BlockTrace Deployment Guide
+
+## Architecture
+
+```
+┌─────────────┐        ┌──────────────────┐        ┌───────────────┐
+│   Vercel     │  HTTP  │  Render (Free)   │  Bolt  │  Neo4j Aura   │
+│  (Frontend)  │ ─────> │  (FastAPI API)   │ ─────> │  (Graph DB)   │
+│  React SPA   │        │  Python 3.12     │        │               │
+└─────────────┘        └──────────────────┘        └───────────────┘
+                              │
+                              ├──> Etherscan API (on-chain data)
+                              ├──> Sepolia RPC (blockchain anchoring)
+                              └──> Pinata / IPFS (report & case storage)
+```
+
+- **Frontend**: `https://blocktrace-v2.vercel.app` — static React SPA
+- **Backend**: `https://blocktrace-v2.onrender.com` — FastAPI on Render free tier
+
+---
+
+## Backend (Render)
+
+### Service Configuration
+
+| Setting        | Value                                             |
+|----------------|---------------------------------------------------|
+| Type           | Web Service                                       |
+| Environment    | Python                                            |
+| Build Command  | `pip install -r requirements.txt`                 |
+| Start Command  | `uvicorn api:app --host 0.0.0.0 --port $PORT`    |
+| Health Check   | `/health`                                         |
+| Plan           | Free                                              |
+
+### Environment Variables
+
+Set these in Render's Environment tab (values are secrets — names only listed here):
+
+#### Required
+| Variable              | Description                                    |
+|-----------------------|------------------------------------------------|
+| `PUBLIC_MODE`         | Set to `true`                                  |
+| `ACCESS_CODE`         | Strong secret for protected endpoints          |
+| `CORS_ORIGINS`        | `https://blocktrace-v2.vercel.app`             |
+| `NEO4J_URI`           | Neo4j Aura connection URI                      |
+| `NEO4J_USER`          | Neo4j username                                 |
+| `NEO4J_PASSWORD`      | Neo4j password                                 |
+| `NEO4J_DATABASE`      | Neo4j database name (usually `neo4j`)          |
+| `ETHERSCAN_API_KEY`   | Etherscan API key for on-chain queries         |
+| `SEPOLIA_RPC_URL`     | Sepolia RPC endpoint (e.g. Infura / Alchemy)   |
+| `CONTRACT_ADDRESS`    | BlockTraceRegistry contract on Sepolia         |
+| `CASE_CONTRACT_ADDRESS` | BlockTraceCaseRegistry contract on Sepolia   |
+| `PINATA_GATEWAY`      | Pinata gateway URL for IPFS downloads          |
+
+#### Optional (for full functionality on demo day)
+| Variable              | Description                                    |
+|-----------------------|------------------------------------------------|
+| `PINATA_JWT`          | Pinata API token for IPFS uploads              |
+| `WALLET_PRIVATE_KEY`  | Sepolia wallet key for on-chain transactions   |
+| `CASE_ENCRYPTION_KEY` | AES-256 key for case snapshot encryption       |
+
+> **Note**: Leave the three optional variables **unset** for a read-only public host.
+> Set them **only** with a strong `ACCESS_CODE` on demo day — they enable
+> report publishing, case anchoring, and encrypted case storage.
+
+### Important: Ephemeral Filesystem
+
+Render's free tier uses an **ephemeral filesystem**. The `cases/` folder where
+saved investigation JSON files are stored will be **lost on every deploy or restart**.
+This means:
+- Saved cases are temporary on the hosted version
+- Case data persists only until the next deploy or instance restart
+- For permanent storage, cases are anchored on-chain (Sepolia) and on IPFS
+
+### Python Version
+
+Render uses `runtime.txt` to determine the Python version. The file is set to
+`python-3.12.8`. Your local machine may use Python 3.14, but Render only supports
+up to 3.12/3.13.
+
+---
+
+## Frontend (Vercel)
+
+### Configuration
+
+1. Connect the `stitch_universal_build_framework` directory to Vercel
+2. Set the environment variable:
+
+| Variable              | Value                                          |
+|-----------------------|------------------------------------------------|
+| `VITE_API_BASE_URL`   | `https://blocktrace-v2.onrender.com`           |
+
+3. Vercel auto-detects Vite and runs `npm run build`
+4. `vercel.json` provides SPA rewrites so `/privacy` and other routes work
+
+### Routes
+
+| Path       | Description                        |
+|------------|------------------------------------|
+| `/`        | Main application (SPA)             |
+| `/privacy` | Static privacy policy page         |
+
+---
+
+## Public Mode Behavior
+
+When `PUBLIC_MODE=true`:
+
+### Public endpoints (no access code needed)
+- `GET /health` — Wake-up / health check
+- `GET /contracts` — Smart contract addresses (no secrets)
+- `GET /sanctions/check?address=0x...` — Sanctions screening
+- `POST /report/verify` — PDF report verification
+
+### Protected endpoints (require `X-Access-Code` header)
+All other endpoints (investigation, findings, cases, certificates, reports).
+Returns `401` with message: *"Access code required. Enter your access code to use the full workspace."*
+
+### Security features in public mode
+- Rate limiting: ~30 requests/minute/IP on public endpoints
+- Generic error messages (no stack traces exposed)
+- CORS restricted to `CORS_ORIGINS` value
+- Access code compared with `hmac.compare_digest` (timing-safe)
+- Secrets never logged or returned in any response
+
+---
+
+## Post-Deploy Smoke Test
+
+After deploying both services, run these from PowerShell:
+
+```powershell
+# 1. Health check (should return {"status":"ok","public_mode":true})
+curl.exe https://blocktrace-v2.onrender.com/health
+
+# 2. Sanctions check (should return {"sanctioned":true, ...})
+curl.exe "https://blocktrace-v2.onrender.com/sanctions/check?address=0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
+
+# 3. Protected endpoint without code (should return 401)
+curl.exe -X POST https://blocktrace-v2.onrender.com/clear
+
+# 4. Protected endpoint with code (should return {"status":"cleared"})
+curl.exe -X POST -H "X-Access-Code: YOUR_ACCESS_CODE_HERE" https://blocktrace-v2.onrender.com/clear
+
+# 5. Frontend loads
+curl.exe -s -o NUL -w "%{http_code}" https://blocktrace-v2.vercel.app
+# Expected: 200
+
+# 6. Privacy page loads
+curl.exe -s -o NUL -w "%{http_code}" https://blocktrace-v2.vercel.app/privacy
+# Expected: 200
+```
+
+> **Note**: The first request to Render may take 30–60 seconds if the instance is
+> sleeping (free tier). The frontend calls `GET /health` on load to wake it early.
+
