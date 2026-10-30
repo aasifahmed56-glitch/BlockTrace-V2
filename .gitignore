@@ -29,3 +29,5 @@ desktop/build/
 desktop/web/
 desktop/assets/
 desktop/.tools/
+
+extension/*.zip
