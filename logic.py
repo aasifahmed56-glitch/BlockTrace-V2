@@ -278,13 +278,34 @@ def describe_sanctions_snapshot(meta=None):
 
 def check_sanctions(wallet_addresses):
     """Cross-references a list/set of wallet addresses against the sanctions list.
-    Case-insensitive. Returns a list of (address, entry_dict) for every match found."""
+    Case-insensitive. Returns a list of (address, entry_dict) for every distinct
+    sanctioned address, in first-seen order — an address listed twice (or in two
+    letter cases) is reported once."""
     matches = []
+    seen = set()
     for addr in wallet_addresses:
-        entry = SANCTIONED_ADDRESSES.get(addr.lower())
+        key = addr.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = SANCTIONED_ADDRESSES.get(key)
         if entry:
             matches.append((addr, entry))
     return matches
+
+
+def unique_rows(rows):
+    """Drops repeated detection rows keyed on their wallet address (first column,
+    case-insensitive), keeping the first. A safety net for report tables."""
+    seen = set()
+    result = []
+    for row in rows:
+        key = row[0].lower() if isinstance(row[0], str) else row[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(row)
+    return result
 
 
 # ---------------- Verifiable investigation certificate ----------------

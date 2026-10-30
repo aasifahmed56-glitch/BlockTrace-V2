@@ -437,10 +437,14 @@ def fetch_transactions(wallet_address, limit=15, chainid=1, startblock=0, endblo
 
 
 def load_transactions(session, transactions):
+    """Writes transactions as Wallet nodes and SENT edges in the current workspace.
+
+    Addresses are stored lowercase: MERGE matches case-sensitively, so a checksummed
+    and a lowercase spelling of one address would otherwise become two nodes."""
     new_wallets = set()
     for tx in transactions:
-        from_addr, to_addr = tx["from"], tx["to"]
-        if not to_addr:
+        from_addr, to_addr = (tx.get("from") or "").lower(), (tx.get("to") or "").lower()
+        if not from_addr or not to_addr:
             continue
         try:
             value_eth = int(tx["value"]) / 1e18
@@ -468,7 +472,7 @@ def load_transactions(session, transactions):
 
 def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
     visited = set()
-    current_layer = {start_wallet}
+    current_layer = {start_wallet.lower()}
     limit_hit_wallets = []
     with neo4j_session() as session:
         for hop in range(hops):
@@ -497,7 +501,7 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
         return 0, True, []
 
     visited = set()
-    current_layer = {source}
+    current_layer = {source.lower()}
     found = False
     limit_hit_wallets = []
     with neo4j_session() as session:
@@ -673,7 +677,8 @@ def load_case_edges(edges):
                 MERGE (a)-[t:SENT {hash: $tx_hash}]->(b)
                 SET t.value = $value_eth
                 """,
-                ws=workspace.current(), from_addr=e["from"], to_addr=e["to"], tx_hash=synthetic_hash, value_eth=e["value"]
+                ws=workspace.current(), from_addr=e["from"].lower(), to_addr=e["to"].lower(),
+                tx_hash=synthetic_hash, value_eth=e["value"]
             )
 
 

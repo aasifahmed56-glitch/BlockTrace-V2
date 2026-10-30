@@ -23,8 +23,9 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
 )
 
+import workspace
 from logic import (
-    short, risk_tier, compute_wallet_risk, build_narrative, check_sanctions,
+    short, risk_tier, compute_wallet_risk, build_narrative, check_sanctions, unique_rows,
     describe_scope, describe_cap, describe_sanctions_snapshot
 )
 from report_theme import (
@@ -48,9 +49,14 @@ NEO4J_DATABASE = os.getenv("NEO4J_DATABASE")
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 
+# Every query below is limited to the current request's workspace (and, through the
+# matched start node, to edges inside it). Without the filter the dossier counted and
+# listed wallets from every visitor's graph, so rows repeated once per workspace.
+
 def get_summary_stats(session):
     result = session.run(
-        "MATCH (w:Wallet) OPTIONAL MATCH (w)-[r:SENT]->() RETURN count(DISTINCT w) AS wallets, count(r) AS txs"
+        "MATCH (w:Wallet {ws: $ws}) OPTIONAL MATCH (w)-[r:SENT]->() RETURN count(DISTINCT w) AS wallets, count(r) AS txs",
+        ws=workspace.current()
     )
     record = result.single()
     return record["wallets"], record["txs"]
@@ -59,12 +65,12 @@ def get_summary_stats(session):
 def get_data_window(session):
     result = session.run(
         """
-        MATCH ()-[r:SENT]->()
+        MATCH (:Wallet {ws: $ws})-[r:SENT]->()
         WHERE r.timestamp IS NOT NULL
         WITH toInteger(r.timestamp) AS ts
         WHERE ts IS NOT NULL AND ts > 0
         RETURN min(ts) AS min_ts, max(ts) AS max_ts
-        """
+        """, ws=workspace.current()
     )
     record = result.single()
     if record and record["min_ts"] is not None and record["max_ts"] is not None:
@@ -77,31 +83,31 @@ def get_data_window(session):
 def get_hub_wallets(session, top_n=10):
     result = session.run(
         """
-        MATCH (w:Wallet)-[r:SENT]-()
+        MATCH (w:Wallet {ws: $ws})-[r:SENT]-()
         RETURN w.address AS wallet, count(r) AS total_txs
         ORDER BY total_txs DESC LIMIT $top_n
-        """, top_n=top_n
+        """, ws=workspace.current(), top_n=top_n
     )
-    return [(r["wallet"], r["total_txs"]) for r in result]
+    return unique_rows([(r["wallet"], r["total_txs"]) for r in result])
 
 
 def get_fanout_wallets(session, min_recipients=4):
     result = session.run(
         """
-        MATCH (a:Wallet)-[:SENT]->(b:Wallet)
+        MATCH (a:Wallet {ws: $ws})-[:SENT]->(b:Wallet)
         WITH a, count(DISTINCT b) AS distinct_recipients
         WHERE distinct_recipients >= $min_recipients
         RETURN a.address AS wallet, distinct_recipients
         ORDER BY distinct_recipients DESC LIMIT 10
-        """, min_recipients=min_recipients
+        """, ws=workspace.current(), min_recipients=min_recipients
     )
-    return [(r["wallet"], r["distinct_recipients"]) for r in result]
+    return unique_rows([(r["wallet"], r["distinct_recipients"]) for r in result])
 
 
 def get_peel_chains(session):
     result = session.run(
         """
-        MATCH (mid:Wallet)-[r2:SENT]->(next1:Wallet)
+        MATCH (mid:Wallet {ws: $ws})-[r2:SENT]->(next1:Wallet)
         MATCH (mid)-[r3:SENT]->(next2:Wallet)
         WHERE elementId(next1) < elementId(next2) AND r2.value > 0.001 AND r3.value > 0.001
         WITH mid,
@@ -114,38 +120,46 @@ def get_peel_chains(session):
         RETURN mid.address AS wallet, top_match.main AS main_amount, top_match.peel AS peel_amount
         ORDER BY main_amount DESC
         LIMIT 10
-        """
+        """, ws=workspace.current()
     )
-    return [(r["wallet"], r["main_amount"], r["peel_amount"]) for r in result]
+    return unique_rows([(r["wallet"], r["main_amount"], r["peel_amount"]) for r in result])
 
 
 def get_round_number_transactions(session, min_value=1.0, limit=10):
     result = session.run(
         """
-        MATCH (a:Wallet)-[r:SENT]->(b:Wallet)
+        MATCH (a:Wallet {ws: $ws})-[r:SENT]->(b:Wallet)
         WHERE r.value >= $min_value AND r.value = toInteger(r.value)
-        RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value
+        RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value, r.hash AS tx_hash
         ORDER BY r.value DESC
         LIMIT $limit
-        """, min_value=min_value, limit=limit
+        """, ws=workspace.current(), min_value=min_value, limit=limit
     )
-    return [(r["from_addr"], r["to_addr"], r["value"]) for r in result]
+    # Keyed on the transaction hash: two real transfers of the same amount between the
+    # same wallets are distinct rows, the same transaction twice is not.
+    seen, rows = set(), []
+    for r in result:
+        if r["tx_hash"] in seen:
+            continue
+        seen.add(r["tx_hash"])
+        rows.append((r["from_addr"], r["to_addr"], r["value"]))
+    return rows
 
 
 def get_circular_flows(session, max_hops=4, limit=10):
     result = session.run(
         """
-        MATCH path = (a:Wallet)-[:SENT*2..%d]->(a)
+        MATCH path = (a:Wallet {ws: $ws})-[:SENT*2..%d]->(a)
         RETURN DISTINCT a.address AS wallet, length(path) AS hops
         ORDER BY hops ASC
         LIMIT $limit
-        """ % max_hops, limit=limit
+        """ % max_hops, ws=workspace.current(), limit=limit
     )
-    return [(r["wallet"], r["hops"]) for r in result]
+    return unique_rows([(r["wallet"], r["hops"]) for r in result])
 
 
 def get_all_wallet_addresses(session):
-    result = session.run("MATCH (w:Wallet) RETURN w.address AS address")
+    result = session.run("MATCH (w:Wallet {ws: $ws}) RETURN w.address AS address", ws=workspace.current())
     return [r["address"] for r in result]
 
 
