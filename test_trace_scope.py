@@ -25,19 +25,21 @@ def test_describe_scope_with_window():
              "tx_per_wallet": 15, "hops": 2, "chain": "Ethereum"}
     assert describe_scope(scope) == (
         "Transactions 2022-03-23 to 2022-03-30 · oldest first · up to 15 per wallet · 2 hops · Ethereum"
+        " · normal + internal transfers"
     )
 
 
 def test_describe_scope_without_dates():
     scope = {"from_date": None, "to_date": None, "sort": "desc", "tx_per_wallet": 15, "hops": 2, "chain": "Ethereum"}
-    assert describe_scope(scope) == "All dates (newest 15 per wallet) · 2 hops · Ethereum"
+    assert describe_scope(scope) == "All dates (newest 15 per wallet) · 2 hops · Ethereum · normal + internal transfers"
 
 
 def test_describe_scope_open_ended_and_incident():
     scope = {"from_date": "2022-02-02", "to_date": None, "sort": "desc", "tx_per_wallet": 10,
              "hops": 1, "chain": "Polygon", "incident_date": "2022-02-02"}
     assert describe_scope(scope) == (
-        "Transactions 2022-02-02 to today · newest first · up to 10 per wallet · 1 hops · Polygon · incident 2022-02-02"
+        "Transactions 2022-02-02 to today · newest first · up to 10 per wallet · 1 hop · Polygon · incident 2022-02-02"
+        " · normal + internal transfers"
     )
 
 
@@ -117,7 +119,7 @@ def test_expand_returns_and_remembers_scope(client, monkeypatch):
     assert res.status_code == 200
     body = res.json()
     assert body["scope"] == {"from_date": "2022-03-23", "to_date": "2022-03-30", "sort": "asc",
-                             "tx_per_wallet": 20, "hops": 2, "chain": "Ethereum"}
+                             "tx_per_wallet": 20, "hops": 2, "chain": "Ethereum", "include_internal": False}
     assert body["hit_limit"] is True
     assert body["limited_wallets"] == ["0xaaa", "0xbbb"]
     assert body["limit_note"] == "Showing 20 of the wallet's transactions"

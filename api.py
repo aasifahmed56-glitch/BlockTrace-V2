@@ -119,7 +119,8 @@ CHAIN_OPTIONS = {
 
 # Each window starts on the day of the first large incoming transfer to the listed
 # address (checked against Etherscan), and is traced oldest-first so the graph shows
-# the incident itself rather than the wallet's most recent activity.
+# the incident itself rather than the wallet's most recent activity. Internal transfers
+# are included because bridge exploits move most funds through contracts.
 CURATED_CASES = {
     "Ronin Bridge Hack ($600M, 2022)": {
         "address": "0x098B716B8Aaf21512996dC57EB0615e2383E2f96",
@@ -130,6 +131,7 @@ CURATED_CASES = {
         "from_date": "2022-03-23",
         "to_date": "2022-04-30",
         "sort": "asc",
+        "include_internal": True,  # bridge exploits move funds through contracts
         "date_note": "Exploited 2022-03-23 (disclosed 2022-03-29); laundering through Tornado Cash "
                      "began around late April 2022.",
     },
@@ -143,6 +145,7 @@ CURATED_CASES = {
         "from_date": "2021-08-10",
         "to_date": "2021-08-31",
         "sort": "asc",
+        "include_internal": True,  # bridge exploits move funds through contracts
         "date_note": "Exploited 2021-08-10; the attacker returned the funds over the following days.",
     },
     "Wormhole Bridge Hack ($321M, 2022)": {
@@ -154,6 +157,7 @@ CURATED_CASES = {
         "from_date": "2022-02-02",
         "to_date": "2022-02-09",
         "sort": "asc",
+        "include_internal": True,  # bridge exploits move funds through contracts
         "date_note": "Exploited 2022-02-02, when 80,000 wETH was minted to this address.",
     },
 }
@@ -169,7 +173,8 @@ def normalize_sort(sort):
     return "asc" if (sort and sort.lower() in ("asc", "oldest", "oldest first")) else "desc"
 
 
-def build_scope(from_date=None, to_date=None, sort="desc", tx_per_wallet=15, hops=None, chain="Ethereum", **extra):
+def build_scope(from_date=None, to_date=None, sort="desc", tx_per_wallet=15, hops=None, chain="Ethereum",
+                include_internal=False, **extra):
     """The trace parameters as reported to clients; unset dates stay None."""
     scope = {
         "from_date": from_date or None,
@@ -178,6 +183,7 @@ def build_scope(from_date=None, to_date=None, sort="desc", tx_per_wallet=15, hop
         "tx_per_wallet": tx_per_wallet,
         "hops": hops,
         "chain": chain,
+        "include_internal": bool(include_internal),
     }
     scope.update({k: v for k, v in extra.items() if v is not None})
     return scope
@@ -190,6 +196,20 @@ def remember_trace(scope, limited_wallets, quality=None):
             "limited_wallets": list(limited_wallets or []),
             "quality": quality,
         }
+
+
+def trace_includes_internal(scope=None):
+    """Whether the graph's internal transfers count. A scope without the field (traces and
+    cases from before the option existed) fetched them, so it counts them, as before."""
+    if scope is None:
+        scope = current_trace()["scope"]
+    if not scope:
+        return True
+    return bool(scope.get("include_internal", True))
+
+
+def _counted_kinds():
+    return ["normal", "internal"] if trace_includes_internal() else ["normal"]
 
 
 def current_trace():
@@ -235,6 +255,7 @@ app.add_middleware(
 )
 app.add_middleware(workspace.WorkspaceMiddleware)
 app.add_middleware(view_options.ViewOptionsMiddleware)
+graph_queries.counted_kinds_resolver = _counted_kinds
 
 
 @app.on_event("startup")
@@ -334,9 +355,11 @@ class TraceWindow(BaseModel):
     to_date: Optional[str] = None
     sort: Optional[str] = "desc"
     # Failed transactions (isError = 1) moved no funds, so they stay out of the graph
-    # unless asked for. Internal ETH transfers (sent by contracts) are fetched by default.
+    # unless asked for. Internal ETH transfers (sent by contracts, Etherscan's "Internal
+    # Transactions" tab) are opt-in, so a default trace matches Etherscan's Transactions
+    # tab and costs one Etherscan call per wallet instead of two.
     include_failed: bool = False
-    include_internal: bool = True
+    include_internal: bool = False
 
     @field_validator("from_date", "to_date")
     @classmethod
@@ -555,7 +578,7 @@ def fetch_internal_transactions(wallet_address, limit=15, chainid=1, startblock=
 
 
 def fetch_wallet_activity(wallet_address, limit=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
-                          include_failed=False, include_internal=True, ts_from=None, ts_to=None, stats=None):
+                          include_failed=False, include_internal=False, ts_from=None, ts_to=None, stats=None):
     """Normal plus (optionally) internal transfers of one wallet, each list capped at `limit`.
 
     Cost: one Etherscan call per visited wallet, two with internal transfers, each
@@ -617,7 +640,7 @@ def load_transactions(session, transactions, stats=None):
 
 
 def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
-                       include_failed=False, include_internal=True, ts_from=None, ts_to=None, stats=None):
+                       include_failed=False, include_internal=False, ts_from=None, ts_to=None, stats=None):
     visited = set()
     current_layer = {start_wallet.lower()}
     limit_hit_wallets = []
@@ -644,7 +667,7 @@ def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startb
 
 
 def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
-                       include_failed=False, include_internal=True, ts_from=None, ts_to=None, stats=None):
+                       include_failed=False, include_internal=False, ts_from=None, ts_to=None, stats=None):
     destination_lower = destination.lower()
     existing = {a.lower() for a in get_all_wallet_addresses()}
     if destination_lower in existing:
@@ -892,6 +915,7 @@ def list_curated_cases():
                 "description": info["description"], "incident_date": info["incident_date"],
                 "from_date": info["from_date"], "to_date": info["to_date"],
                 "sort": info["sort"], "date_note": info["date_note"],
+                "include_internal": info["include_internal"],
             }
             for name, info in CURATED_CASES.items()
         ]
@@ -912,11 +936,11 @@ def load_curated_case(case_name: str):
     visited, limited = expand_from_wallet(
         info["address"], hops=hops, tx_per_wallet=tx_per_wallet, chainid=info["chainid"],
         startblock=startblock, endblock=endblock, sort=info["sort"],
-        ts_from=ts_from, ts_to=ts_to, stats=stats,
+        include_internal=info["include_internal"], ts_from=ts_from, ts_to=ts_to, stats=stats,
     )
     scope = build_scope(
         info["from_date"], info["to_date"], info["sort"], tx_per_wallet, hops, chain,
-        case_name=case_name, incident_date=info["incident_date"], date_note=info["date_note"],
+        include_internal=info["include_internal"], case_name=case_name, incident_date=info["incident_date"], date_note=info["date_note"],
     )
     remember_trace(scope, limited, stats.as_dict())
     dw = get_data_window_stats()
@@ -948,7 +972,8 @@ def expand(req: ExpandRequest):
         include_failed=req.include_failed, include_internal=req.include_internal,
         ts_from=ts_from, ts_to=ts_to, stats=stats,
     )
-    scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.hops, req.chain)
+    scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.hops, req.chain,
+                        include_internal=req.include_internal)
     remember_trace(scope, limited, stats.as_dict())
     dw = get_data_window_stats()
     return {
@@ -1094,7 +1119,8 @@ def find_path(req: PathRequest):
         include_failed=req.include_failed, include_internal=req.include_internal,
         ts_from=ts_from, ts_to=ts_to, stats=stats,
     )
-    scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.max_hops, req.chain)
+    scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.max_hops, req.chain,
+                        include_internal=req.include_internal)
     remember_trace(scope, limited, stats.as_dict())
     result = {
         "data_quality": data_quality_report(),
@@ -1574,7 +1600,13 @@ def load_case(name: str):
     clear_graph()
     load_case_edges(case_data["edges"])
     # Cases saved before scopes existed have none; the graph is then described without one.
-    remember_trace(case_data.get("scope"), [])
+    # Scopes saved before include_internal existed fetched internal transfers, so they
+    # load as include_internal = True. Only the in-memory copy changes: the saved file,
+    # and so its anchored hash, stay as they were.
+    scope = case_data.get("scope")
+    if scope and "include_internal" not in scope:
+        scope = {**scope, "include_internal": True}
+    remember_trace(scope, [])
     return {
         "status": "loaded",
         "name": case_data["name"],
@@ -1584,7 +1616,7 @@ def load_case(name: str):
         "blockchain_status": case_data.get("blockchain_status", "not_anchored"),
         "cid": case_data.get("cid"),
         "tx_hash": case_data.get("tx_hash"),
-        "scope": case_data.get("scope"),
+        "scope": scope,
     }
 
 

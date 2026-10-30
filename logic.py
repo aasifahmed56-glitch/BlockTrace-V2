@@ -103,11 +103,47 @@ def describe_scope(scope):
     else:
         parts = [f"All dates ({'oldest' if scope.get('sort') == 'asc' else 'newest'} {cap} per wallet)"]
     if scope.get("hops"):
-        parts.append(f"{scope['hops']} hops")
+        hops = scope["hops"]
+        parts.append(f"{hops} hop" if hops == 1 else f"{hops} hops")
     if scope.get("chain"):
         parts.append(scope["chain"])
     if scope.get("incident_date"):
         parts.append(f"incident {scope['incident_date']}")
+    # Scopes from before the option existed fetched internal transfers.
+    if scope.get("include_internal", True):
+        parts.append("normal + internal transfers")
+    else:
+        parts.append("normal transactions only")
+    return " · ".join(parts)
+
+
+def describe_data_quality(quality):
+    """The "Data quality" line, e.g. "Normal 7 (3 with ETH, 4 zero-value hidden) · Internal off
+    · Failed skipped 1". Mirrored by describeDataQuality() in the frontend."""
+    if not quality:
+        return None
+
+    def zero_part(zero):
+        if not zero:
+            return ""
+        return f", {zero} zero-value {'shown' if quality.get('show_zero_value') else 'hidden'}"
+
+    normal = quality.get("normal_stored") or 0
+    with_eth = quality.get("normal_with_eth") or 0
+    parts = [f"Normal {normal} ({with_eth} with ETH{zero_part(normal - with_eth)})"]
+
+    internal = quality.get("internal_stored") or 0
+    if quality.get("internal_counted"):
+        parts.append(f"Internal {internal}")
+    elif internal:
+        parts.append(f"Internal off ({internal} stored, not counted)")
+    else:
+        parts.append("Internal off")
+
+    if quality.get("failed_skipped") is not None:
+        parts.append(f"Failed skipped {quality['failed_skipped']}")
+    if quality.get("capped_wallets"):
+        parts.append(f"Capped wallets {quality['capped_wallets']}")
     return " · ".join(parts)
 
 

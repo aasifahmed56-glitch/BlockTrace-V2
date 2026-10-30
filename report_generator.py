@@ -26,7 +26,7 @@ from reportlab.platypus import (
 import graph_queries
 from logic import (
     short, risk_tier, compute_wallet_risk, build_narrative, check_sanctions, unique_rows,
-    describe_scope, describe_cap, describe_sanctions_snapshot
+    describe_scope, describe_cap, describe_sanctions_snapshot, describe_data_quality
 )
 from report_theme import (
     COLOR_PRIMARY_DARK, COLOR_PRIMARY_ACCENT, COLOR_BG_CREAM,
@@ -84,18 +84,6 @@ def get_circular_flows(session, max_hops=4, limit=10):
 
 def get_all_wallet_addresses(session):
     return graph_queries.all_wallet_addresses(session)
-
-
-def describe_data_quality(quality):
-    """One line for the dossier's "Data quality" row."""
-    if not quality:
-        return None
-    def n(key):
-        value = quality.get(key)
-        return "n/a" if value is None else value
-    return (f"{n('transactions_fetched')} transactions fetched, {n('transactions_shown')} shown; "
-            f"{n('failed_skipped')} failed skipped, {n('zero_value_hidden')} 0-ETH calls hidden, "
-            f"{n('internal_shown')} internal transfers shown, {n('capped_wallets')} wallets capped")
 
 
 def narrative_to_reportlab_markup(html_text):

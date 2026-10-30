@@ -13,9 +13,27 @@ export const describeScope = (scope, { maxHops = false } = {}) => {
   } else {
     parts.push(`All dates (${oldestFirst ? 'oldest' : 'newest'} ${cap} per wallet)`);
   }
-  if (scope.hops) parts.push(`${maxHops ? 'max ' : ''}${scope.hops} hops`);
+  if (scope.hops) parts.push(`${maxHops ? 'max ' : ''}${scope.hops} ${scope.hops === 1 ? 'hop' : 'hops'}`);
   if (scope.chain) parts.push(scope.chain);
   if (scope.incident_date) parts.push(`incident ${scope.incident_date}`);
+  // Scopes from before the option existed fetched internal transfers.
+  parts.push(scope.include_internal === false ? 'normal transactions only' : 'normal + internal transfers');
+  return parts.join(' · ');
+};
+
+// The Data quality line. Mirrors describe_data_quality() in logic.py (PDF dossier).
+export const describeDataQuality = (q) => {
+  if (!q) return null;
+  const zeroPart = (zero) => (zero ? `, ${zero} zero-value ${q.show_zero_value ? 'shown' : 'hidden'}` : '');
+  const normal = q.normal_stored || 0;
+  const withEth = q.normal_with_eth || 0;
+  const parts = [`Normal ${normal} (${withEth} with ETH${zeroPart(normal - withEth)})`];
+  const internal = q.internal_stored || 0;
+  if (q.internal_counted) parts.push(`Internal ${internal}`);
+  else if (internal) parts.push(`Internal off (${internal} stored, not counted)`);
+  else parts.push('Internal off');
+  if (q.failed_skipped != null) parts.push(`Failed skipped ${q.failed_skipped}`);
+  if (q.capped_wallets) parts.push(`Capped wallets ${q.capped_wallets}`);
   return parts.join(' · ');
 };
 

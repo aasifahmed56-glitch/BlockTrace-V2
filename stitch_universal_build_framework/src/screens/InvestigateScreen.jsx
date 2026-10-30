@@ -9,7 +9,10 @@ import {
   clearGraph,
   getErrorMessage,
 } from '../api/client';
-import { describeScope, describeCap } from '../utils/scope';
+import { describeScope, describeCap, describeDataQuality } from '../utils/scope';
+
+const INTERNAL_HELP =
+  "Internal transfers are ETH moved by smart contracts (Etherscan's Internal Transactions tab). Turn on for bridges, mixers and exchanges.";
 
 const CURATED_CASE_CARDS = [
   { name: 'Ronin Bridge Hack ($600M, 2022)', badge: '$600M', sub: 'Lazarus Group OFAC' },
@@ -83,15 +86,10 @@ const DateWindowFields = ({ idPrefix, fromDate, toDate, sortOrder, onFromDate, o
   );
 };
 
-// "N transactions fetched (…)" for the trace toast, from the response's data_quality.
+// Trace toast: the counted total, then the same breakdown as the Data quality box.
 const describeFetch = (q) => {
-  if (!q || q.transactions_fetched == null) return '';
-  const extras = [];
-  if (q.failed_skipped) extras.push(`${q.failed_skipped} failed skipped`);
-  if (q.internal_included) extras.push(`${q.internal_included} internal`);
-  if (q.zero_value_hidden) extras.push(`${q.zero_value_hidden} 0-ETH hidden`);
-  return `${q.transactions_fetched} transactions fetched, ${q.transactions_shown} shown` +
-    (extras.length ? ` (${extras.join(', ')}).` : '.');
+  if (!q || q.transactions_shown == null) return '';
+  return `${q.transactions_shown} transactions counted: ${describeDataQuality(q)}.`;
 };
 
 // The same numbers the PDF dossier prints under "Data quality".
@@ -103,7 +101,7 @@ const DataQualityBox = ({ quality, graphTotals }) => {
     ['Shown', quality.transactions_shown, 'Transactions counted everywhere: successful ETH transfers, 0-ETH calls only if shown.'],
     ['Failed skipped', quality.failed_skipped, 'Failed transactions (isError = 1) left out of the graph.'],
     ['0-ETH hidden', quality.zero_value_hidden, '0-ETH contract calls stored but hidden. Turn on "Show 0-ETH contract calls" to include them.'],
-    ['Internal', quality.internal_shown, 'Internal ETH transfers (sent by contracts) included.'],
+    ['Internal', quality.internal_counted ? quality.internal_shown : 'off', 'Internal ETH transfers (sent by contracts); counted only when the trace included them.'],
     ['Capped wallets', quality.capped_wallets, 'Wallets with more transactions than the per-wallet cap.'],
   ];
   return (
@@ -117,7 +115,7 @@ const DataQualityBox = ({ quality, graphTotals }) => {
         <span className="material-symbols-outlined text-[16px] text-primary">fact_check</span>
         <span className="font-label-caps uppercase text-[10px] font-bold">Data quality</span>
         <span className="font-mono text-[11px]">
-          {n(quality.transactions_shown)} shown of {n(quality.transactions_fetched)} fetched
+          {describeDataQuality(quality)}
           {graphTotals.total > graphTotals.returned && ` · showing ${graphTotals.returned} of ${graphTotals.total} in the graph`}
         </span>
         <span className="material-symbols-outlined text-[14px]">{open ? 'expand_less' : 'expand_more'}</span>
@@ -192,6 +190,11 @@ export const InvestigateScreen = () => {
 
   const [showCapped, setShowCapped] = useState(false);
 
+  // "Include internal transfers" — a trace option (off: match Etherscan's Transactions tab)
+  const [includeInternal, setIncludeInternal] = useState(false);
+  // What the loaded graph was traced with; old scopes without the field included them
+  const graphIncludesInternal = traceScope ? traceScope.include_internal !== false : null;
+
   // When a new scope arrives (curated case, reopened saved case), mirror it in the form
   const appliedScopeKey = useRef(null);
   useEffect(() => {
@@ -202,6 +205,7 @@ export const InvestigateScreen = () => {
     setFromDate(traceScope.from_date || '');
     setToDate(traceScope.to_date || '');
     setSortOrder(traceScope.sort === 'asc' ? 'asc' : 'desc');
+    setIncludeInternal(traceScope.include_internal !== false);
     if (traceScope.tx_per_wallet) setTxPerWallet(Math.min(30, Math.max(5, Number(traceScope.tx_per_wallet))));
     if (traceScope.hops) setHops(Math.min(3, Math.max(1, Number(traceScope.hops))));
     if (traceScope.chain && chains.includes(traceScope.chain)) setSelectedChain(traceScope.chain);
@@ -258,6 +262,7 @@ export const InvestigateScreen = () => {
         hops: Number(hops),
         tx_per_wallet: Number(txPerWallet),
         chain: selectedChain,
+        include_internal: includeInternal,
         ...traceWindow,
       });
       setStartWallet(data.start_wallet);
@@ -293,6 +298,7 @@ export const InvestigateScreen = () => {
         max_hops: Number(maxHops),
         tx_per_wallet: Number(pathTxPerWallet),
         chain: selectedChain,
+        include_internal: includeInternal,
         from_date: pathFromDate || undefined,
         to_date: pathToDate || undefined,
         sort: pathSortOrder,
@@ -430,6 +436,24 @@ export const InvestigateScreen = () => {
             <span>Show 0-ETH contract calls</span>
           </label>
 
+          {/* Include internal transfers (applies to the next trace) */}
+          <label
+            className="flex items-center gap-1.5 text-[11px] font-label-caps uppercase text-on-surface-variant cursor-pointer select-none"
+            title={INTERNAL_HELP}
+          >
+            <input
+              id="include-internal"
+              type="checkbox"
+              checked={includeInternal}
+              onChange={(e) => setIncludeInternal(e.target.checked)}
+              disabled={actionLoading}
+              aria-describedby="include-internal-help"
+              className="accent-primary"
+            />
+            <span>Include internal transfers</span>
+            <span id="include-internal-help" className="sr-only">{INTERNAL_HELP}</span>
+          </label>
+
           {/* Export Graph */}
           <button
             onClick={handleExportGraph}
@@ -508,6 +532,7 @@ export const InvestigateScreen = () => {
                     {c.from_date && (
                       <span className="text-[10px] text-on-surface-variant/80">
                         Traces {c.from_date} to {c.to_date}, oldest first
+                        {c.include_internal ? ', incl. internal transfers' : ''}
                       </span>
                     )}
                   </div>
@@ -732,6 +757,17 @@ export const InvestigateScreen = () => {
                   {scopeLine || 'Not recorded for this graph (traced before scopes were saved).'}
                 </span>
               </div>
+              {graphIncludesInternal !== null && includeInternal !== graphIncludesInternal && (
+                <div className="rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-xs text-on-surface flex items-start gap-2" role="status">
+                  <span className="material-symbols-outlined text-[16px] text-primary">info</span>
+                  <span>
+                    {graphIncludesInternal
+                      ? 'Graph was loaded with internal transfers; re-run the trace to leave them out.'
+                      : 'Graph was loaded without internal transfers; re-run the trace to include them.'}
+                    {' '}The checkbox applies to the next trace; the graph is not changed until then.
+                  </span>
+                </div>
+              )}
               {traceScope?.date_note && (
                 <p className="text-[11px] text-on-surface-variant pl-6">{traceScope.date_note}</p>
               )}

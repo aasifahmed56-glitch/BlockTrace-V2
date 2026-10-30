@@ -3,8 +3,9 @@ Neo4j read queries shared by the API (graph, summary, Findings) and the PDF doss
 so every surface counts transactions the same way.
 
 THE COUNTING RULE — a SENT edge is a "counted" transaction when:
-  * it is an ETH transfer: a normal transaction (kind "normal", or no kind on edges
-    written before kinds existed) or an internal transfer (kind "internal"); and
+  * it is an ETH transfer of a kind the trace fetched: a normal transaction (kind
+    "normal", or no kind on edges written before kinds existed), plus internal
+    transfers (kind "internal") only when the trace's scope has include_internal; and
   * it moved ETH (value > 0), unless the viewer turned on "Show 0-ETH contract calls".
 Failed transactions are not in the graph at all unless a trace was run with
 include_failed, and the date window was applied when the trace was fetched, so the
@@ -25,6 +26,15 @@ import workspace
 
 COUNTED_KINDS = ["normal", "internal"]
 
+# The API replaces this with a function reading the current trace's scope, so internal
+# transfers count only when the trace fetched them. Without the API (scripts, tests that
+# call these queries directly) every stored kind counts.
+counted_kinds_resolver = None
+
+
+def counted_kinds():
+    return counted_kinds_resolver() if counted_kinds_resolver else list(COUNTED_KINDS)
+
 
 def counted(rel="r"):
     """Cypher predicate for the counting rule on relationship variable `rel`.
@@ -36,7 +46,7 @@ def _params(ws=None, show_zero=None, **extra):
     return {
         "ws": ws or workspace.current(),
         "show_zero": view_options.show_zero() if show_zero is None else show_zero,
-        "kinds": COUNTED_KINDS,
+        "kinds": counted_kinds(),
         **extra,
     }
 
@@ -65,23 +75,36 @@ def data_quality(session, ws=None, show_zero=None):
     record = session.run(
         f"""
         MATCH (:Wallet {{ws: $ws}})-[r:SENT]->(:Wallet)
+        WITH r, coalesce(r.kind, 'normal') AS kind
         RETURN count(r) AS stored,
                sum(CASE WHEN {counted()} THEN 1 ELSE 0 END) AS shown,
-               sum(CASE WHEN r.value = 0 THEN 1 ELSE 0 END) AS zero_value,
-               sum(CASE WHEN r.kind = 'internal' AND {counted()} THEN 1 ELSE 0 END) AS internal_shown,
+               sum(CASE WHEN r.value = 0 AND kind IN $kinds THEN 1 ELSE 0 END) AS zero_value,
+               sum(CASE WHEN kind = 'normal' THEN 1 ELSE 0 END) AS normal_stored,
+               sum(CASE WHEN kind = 'normal' AND r.value > 0 THEN 1 ELSE 0 END) AS normal_with_eth,
+               sum(CASE WHEN kind = 'internal' THEN 1 ELSE 0 END) AS internal_stored,
+               sum(CASE WHEN kind = 'internal' AND {counted()} THEN 1 ELSE 0 END) AS internal_shown,
                sum(CASE WHEN coalesce(r.failed, false) THEN 1 ELSE 0 END) AS failed_stored
         """,
         **params,
     ).single()
-    stored = record["stored"] if record else 0
-    zero_value = (record["zero_value"] or 0) if record else 0
+
+    def n(key):
+        return (record[key] or 0) if record else 0
+
+    zero_value = n("zero_value")
+    normal_stored = n("normal_stored")
     return {
-        "edges_stored": stored,
-        "transactions_shown": (record["shown"] or 0) if record else 0,
+        "edges_stored": n("stored"),
+        "transactions_shown": n("shown"),
         "zero_value_edges": zero_value,
         "zero_value_hidden": 0 if params["show_zero"] else zero_value,
-        "internal_shown": (record["internal_shown"] or 0) if record else 0,
-        "failed_included": (record["failed_stored"] or 0) if record else 0,
+        "normal_stored": normal_stored,
+        "normal_with_eth": n("normal_with_eth"),
+        "normal_zero_value": normal_stored - n("normal_with_eth"),
+        "internal_counted": "internal" in params["kinds"],
+        "internal_stored": n("internal_stored"),
+        "internal_shown": n("internal_shown"),
+        "failed_included": n("failed_stored"),
         "show_zero_value": params["show_zero"],
     }
 

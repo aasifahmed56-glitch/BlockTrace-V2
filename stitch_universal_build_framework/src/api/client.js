@@ -110,24 +110,26 @@ const traceWindow = ({ from_date, to_date, sort = 'desc' }) => {
   return window;
 };
 
-export const expandWallet = async ({ wallet, hops = 2, tx_per_wallet = 15, chain = 'Ethereum', from_date, to_date, sort }) => {
+export const expandWallet = async ({ wallet, hops = 2, tx_per_wallet = 15, chain = 'Ethereum', from_date, to_date, sort, include_internal = false }) => {
   const { data } = await api.post('/expand', {
     wallet,
     hops: Number(hops),
     tx_per_wallet: Number(tx_per_wallet),
     chain,
+    include_internal: !!include_internal,
     ...traceWindow({ from_date, to_date, sort }),
   });
   return data;
 };
 
-export const findPath = async ({ source, destination, max_hops = 4, tx_per_wallet = 15, chain = 'Ethereum', from_date, to_date, sort }) => {
+export const findPath = async ({ source, destination, max_hops = 4, tx_per_wallet = 15, chain = 'Ethereum', from_date, to_date, sort, include_internal = false }) => {
   const { data } = await api.post('/path', {
     source,
     destination,
     max_hops: Number(max_hops),
     tx_per_wallet: Number(tx_per_wallet),
     chain,
+    include_internal: !!include_internal,
     ...traceWindow({ from_date, to_date, sort }),
   });
   return data;

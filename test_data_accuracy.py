@@ -142,7 +142,8 @@ def traced(monkeypatch):
     client = TestClient(api.app)
     client.headers.update({"X-Workspace-Id": ws})
     res = client.post("/expand", json={"wallet": START, "hops": 1, "tx_per_wallet": 15,
-                                       "from_date": DAY, "to_date": DAY, "sort": "asc"})
+                                       "from_date": DAY, "to_date": DAY, "sort": "asc",
+                                       "include_internal": True})
     assert res.status_code == 200
     try:
         yield client, ws, res.json()
