@@ -4,7 +4,7 @@ import {
   fetchCuratedCases,
   fetchGraphData,
   fetchSummary,
-  fetchSanctions,
+  fetchSanctionsWithSnapshot,
   fetchRiskOverview,
   fetchNarrative,
   fetchHubDetections,
@@ -32,6 +32,10 @@ export const InvestigationProvider = ({ children }) => {
   const [edges, setEdges] = useState([]);
   const [summary, setSummary] = useState({ wallets_traced: 0, transactions_mapped: 0 });
   const [startWallet, setStartWallet] = useState('');
+
+  // What the last trace covered (dates, order, cap) and which wallets hit the cap
+  const [traceScope, setTraceScope] = useState(null);
+  const [limitedWallets, setLimitedWallets] = useState([]);
   
   // Path finding isolation state
   const [activePathEdges, setActivePathEdges] = useState(null);
@@ -39,6 +43,7 @@ export const InvestigationProvider = ({ children }) => {
 
   // Findings data
   const [sanctions, setSanctions] = useState([]);
+  const [sanctionsSnapshot, setSanctionsSnapshot] = useState(null);
   const [riskData, setRiskData] = useState([]);
   const [narrativeParagraphs, setNarrativeParagraphs] = useState([]);
   const [hubDetections, setHubDetections] = useState([]);
@@ -134,6 +139,8 @@ export const InvestigationProvider = ({ children }) => {
       ]);
       setEdges(graphEdges || []);
       setSummary(summaryStats || { wallets_traced: 0, transactions_mapped: 0 });
+      setTraceScope(summaryStats?.scope || null);
+      setLimitedWallets(summaryStats?.limited_wallets || []);
       
       // Update startWallet if not set and edges exist
       if (graphEdges && graphEdges.length > 0) {
@@ -164,7 +171,7 @@ export const InvestigationProvider = ({ children }) => {
         circularRes,
       ] = await Promise.allSettled([
         fetchNarrative(activeStart),
-        fetchSanctions(),
+        fetchSanctionsWithSnapshot(),
         fetchRiskOverview(),
         fetchHubDetections(),
         fetchFanoutDetections(),
@@ -174,7 +181,10 @@ export const InvestigationProvider = ({ children }) => {
       ]);
 
       if (narrativeRes.status === 'fulfilled') setNarrativeParagraphs(narrativeRes.value);
-      if (sanctionsRes.status === 'fulfilled') setSanctions(sanctionsRes.value);
+      if (sanctionsRes.status === 'fulfilled') {
+        setSanctions(sanctionsRes.value.matches);
+        setSanctionsSnapshot(sanctionsRes.value.snapshot);
+      }
       if (riskRes.status === 'fulfilled') setRiskData(riskRes.value);
       if (hubRes.status === 'fulfilled') setHubDetections(hubRes.value);
       if (fanoutRes.status === 'fulfilled') setFanoutDetections(fanoutRes.value);
@@ -237,6 +247,9 @@ export const InvestigationProvider = ({ children }) => {
     setPathBannerMessage,
     resetPathView,
     sanctions,
+    sanctionsSnapshot,
+    traceScope,
+    limitedWallets,
     riskData,
     narrativeParagraphs,
     hubDetections,

@@ -1,0 +1,67 @@
+<?xml version="1.0" standalone="yes"?>
+<sdnList xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/XML">
+  <publshInformation>
+    <Publish_Date>10/28/2026</Publish_Date>
+    <Record_Count>3</Record_Count>
+  </publshInformation>
+  <sdnEntry>
+    <uid>27307</uid>
+    <lastName>LAZARUS GROUP</lastName>
+    <sdnType>Entity</sdnType>
+    <programList>
+      <program>DPRK3</program>
+    </programList>
+    <idList>
+      <id>
+        <uid>1</uid>
+        <idType>Digital Currency Address - ETH</idType>
+        <idNumber>0x098B716B8Aaf21512996dC57EB0615e2383E2f96</idNumber>
+      </id>
+      <id>
+        <uid>2</uid>
+        <idType>Digital Currency Address - XBT</idType>
+        <idNumber>12aNKp2iDKuhEde2YfPdd4DFGenRUTKupL</idNumber>
+      </id>
+    </idList>
+  </sdnEntry>
+  <sdnEntry>
+    <uid>40001</uid>
+    <firstName>Jane</firstName>
+    <lastName>EXAMPLE</lastName>
+    <sdnType>Individual</sdnType>
+    <programList>
+      <program>CYBER2</program>
+      <program>RUSSIA-EO14024</program>
+    </programList>
+    <idList>
+      <id>
+        <uid>3</uid>
+        <idType>Digital Currency Address - USDT</idType>
+        <idNumber>0x00000000000000000000000000000000000000AA</idNumber>
+      </id>
+      <id>
+        <uid>4</uid>
+        <idType>Digital Currency Address - ETH</idType>
+        <idNumber>0x00000000000000000000000000000000000000aa</idNumber>
+      </id>
+      <id>
+        <uid>5</uid>
+        <idType>Digital Currency Address - TRX</idType>
+        <idNumber>TXkMhJ1pKGz9tCSVY4SiAXbVbAx1ZFqaQk</idNumber>
+      </id>
+      <id>
+        <uid>6</uid>
+        <idType>Passport</idType>
+        <idNumber>0x00000000000000000000000000000000000000bb</idNumber>
+      </id>
+    </idList>
+  </sdnEntry>
+  <sdnEntry>
+    <uid>50001</uid>
+    <lastName>NO CRYPTO LTD</lastName>
+    <sdnType>Entity</sdnType>
+    <programList>
+      <program>CUBA</program>
+    </programList>
+  </sdnEntry>
+</sdnList>

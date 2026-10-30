@@ -128,7 +128,7 @@ After deploying both services, run these from PowerShell:
 # 1. Health check (should return {"status":"ok","public_mode":true})
 curl.exe https://blocktrace-v2.onrender.com/health
 
-# 2. Sanctions check (should return {"sanctioned":true, ...})
+# 2. Sanctions check (should return {"sanctioned":true, "list_publication_date": ..., "count": ...})
 curl.exe "https://blocktrace-v2.onrender.com/sanctions/check?address=0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
 
 # 3. Workspace endpoint, no login needed (should return {"chains":[...]})
@@ -149,3 +149,14 @@ curl.exe -s -o NUL -w "%{http_code}" https://blocktrace-v2.vercel.app/privacy
 > **Note**: The first request to Render may take 30–60 seconds if the instance is
 > sleeping (free tier). The frontend calls `GET /health` on load to wake it early.
 
+## Refreshing the OFAC sanctions list
+
+The backend screens addresses against `data/sanctions_ofac.json`, a committed snapshot of the
+OFAC SDN list, so Render needs no network access to OFAC at startup. To update it:
+
+```bash
+python scripts/update_sanctions.py
+```
+
+Then commit `data/sanctions_ofac.json` and push; Render redeploys with the new snapshot.
+`/sanctions/check` reports the snapshot's `list_publication_date`, `fetched_at` and `count`.

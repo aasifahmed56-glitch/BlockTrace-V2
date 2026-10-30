@@ -7,7 +7,7 @@ The **BlockTrace Verifier** browser extension is designed with a strict privacy-
 ## What is Processed
 
 1. **Forensic Report Verification**: When you choose to upload a PDF report for verification, the file and the investigation hash are transmitted directly to the configured BlockTrace verification API (`https://blocktrace-v2.onrender.com/report/verify`). The file is processed entirely in volatile server memory to compute cryptographic SHA-256 digests and compare them with public on-chain Sepolia records. The file is never written to disk, retained, or logged.
-2. **Address Sanctions Check**: When you enter an Ethereum address or select text and invoke the context menu "Check address with BlockTrace", that single address is queried against the static OFAC-based demonstration list. No search history or query logs are retained.
+2. **Address Sanctions Check**: When you enter an Ethereum address or select text and invoke the context menu "Check address with BlockTrace", that single address is queried against BlockTrace's dated snapshot of the OFAC SDN list. No search history or query logs are retained.
 
 ## What is NOT Collected
 

@@ -9,6 +9,8 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     sanctions,
     entityLabels,
     isLoadingGraph,
+    limitedWallets,
+    traceScope,
   } = useInvestigation();
 
   const svgRef = useRef(null);
@@ -21,6 +23,12 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
   const sanctionedSet = useMemo(() => {
     return new Set(sanctions.map((s) => s.wallet.toLowerCase()));
   }, [sanctions]);
+
+  // Wallets whose history was cut off by the per-wallet transaction cap
+  const cappedSet = useMemo(() => {
+    return new Set((limitedWallets || []).map((w) => w.toLowerCase()));
+  }, [limitedWallets]);
+  const capText = `More transactions than the cap (${traceScope?.tx_per_wallet ?? 15}); only part of this wallet's history is shown.`;
 
   // Edges to render: if activePathEdges is set, use it; otherwise use all edges
   const rawEdges = activePathEdges || edges;
@@ -49,6 +57,7 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
           id: e.from,
           address: e.from,
           isSanctioned: sanctionedSet.has(fromLower),
+          isCapped: cappedSet.has(fromLower),
           label: entityLabels[fromLower] || null,
           inDegree: 0,
           outDegree: 0,
@@ -61,6 +70,7 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
           id: e.to,
           address: e.to,
           isSanctioned: sanctionedSet.has(toLower),
+          isCapped: cappedSet.has(toLower),
           label: entityLabels[toLower] || null,
           inDegree: 0,
           outDegree: 0,
@@ -87,7 +97,7 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
       nodes: Array.from(nodeMap.values()),
       links: linksArray,
     };
-  }, [filteredEdges, sanctionedSet, entityLabels]);
+  }, [filteredEdges, sanctionedSet, cappedSet, entityLabels]);
 
   // Shorten address helper
   const truncate = (addr) => {
@@ -230,9 +240,26 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
           })
       );
 
+    const nodeRadius = (d) => Math.max(14, Math.min(28, 14 + (d.inDegree + d.outDegree) * 1.5));
+
+    // Dashed amber ring around wallets that hit the transaction cap
+    node
+      .filter((d) => d.isCapped)
+      .append('circle')
+      .attr('class', 'cap-ring')
+      .attr('r', (d) => nodeRadius(d) + 5)
+      .attr('fill', 'none')
+      .attr('stroke', '#F2A93B')
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', '4 3');
+
+    node.append('title').text((d) => (d.isCapped ? `${d.address}
+${capText}` : d.address));
+
     // Node Circles
     node
       .append('circle')
+      .attr('class', 'node-core')
       .attr('r', (d) => {
         const degree = d.inDegree + d.outDegree;
         return Math.max(14, Math.min(28, 14 + degree * 1.5));
@@ -286,12 +313,12 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     node
       .on('mouseenter', (event, d) => {
         setHoveredNode(d);
-        d3.select(event.currentTarget).select('circle').attr('stroke', '#ffffff').attr('stroke-width', 3.5);
+        d3.select(event.currentTarget).select('circle.node-core').attr('stroke', '#ffffff').attr('stroke-width', 3.5);
       })
       .on('mouseleave', (event, d) => {
         setHoveredNode(null);
         d3.select(event.currentTarget)
-          .select('circle')
+          .select('circle.node-core')
           .attr('stroke', d.isSanctioned ? '#ffdad6' : d.label ? '#ffdbcd' : '#e1bfb2')
           .attr('stroke-width', 2.5);
       })
@@ -325,7 +352,7 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     return () => {
       simulation.stop();
     };
-  }, [nodes, links, sanctionedSet, onSelectWallet]);
+  }, [nodes, links, sanctionedSet, onSelectWallet, capText]);
 
   // Zoom Controls
   const handleZoom = (scaleFactor) => {
@@ -415,6 +442,12 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
           <div className="w-3 h-3 rounded-full bg-primary border border-primary-fixed" />
           <span className="text-primary font-bold">Known Label</span>
         </div>
+        {cappedSet.size > 0 && (
+          <div className="flex items-center gap-1.5" title={capText}>
+            <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#F2A93B]" />
+            <span className="text-[#B7791F] font-bold">Cap Reached</span>
+          </div>
+        )}
       </div>
 
       {/* Hover Node Tooltip */}
@@ -444,6 +477,12 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
           <p className="font-address-md text-xs text-on-surface break-all mb-3 select-all font-semibold">
             {hoveredNode.address}
           </p>
+          {hoveredNode.isCapped && (
+            <p className="text-[11px] text-[#B7791F] bg-[#F2A93B]/10 border border-[#F2A93B]/40 rounded p-2 mb-3 flex items-start gap-1.5">
+              <span className="material-symbols-outlined text-[14px]">content_cut</span>
+              <span>{capText}</span>
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="bg-surface-container p-2 rounded">
               <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Connections</span>

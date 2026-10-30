@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useInvestigation } from '../context/InvestigationContext';
 import { GraphCanvas } from '../components/GraphCanvas';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -9,6 +9,79 @@ import {
   clearGraph,
   getErrorMessage,
 } from '../api/client';
+import { describeScope, describeCap } from '../utils/scope';
+
+const CURATED_CASE_CARDS = [
+  { name: 'Ronin Bridge Hack ($600M, 2022)', badge: '$600M', sub: 'Lazarus Group OFAC' },
+  { name: 'Poly Network Hack ($611M, 2021)', badge: '$611M', sub: 'Cross-chain DeFi' },
+  { name: 'Wormhole Bridge Hack ($321M, 2022)', badge: '$321M', sub: 'Solana-ETH Bridge' },
+];
+
+const inputClass =
+  'w-full bg-surface text-on-surface text-xs p-2 rounded-lg border border-outline-variant focus:outline-none focus:ring-1 focus:ring-primary font-medium';
+const labelClass = 'font-label-caps text-[10px] uppercase text-on-surface-variant font-bold block mb-1';
+
+// Today in the user's local time zone, as YYYY-MM-DD for <input type="date" max>.
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// From / To date + order fields; used by both the wallet trace and the path search.
+const DateWindowFields = ({ idPrefix, fromDate, toDate, sortOrder, onFromDate, onToDate, onSortOrder }) => {
+  const today = todayIso();
+  const invalid = Boolean(fromDate && toDate && fromDate > toDate);
+  return (
+    <div className="flex flex-col gap-2 bg-surface-container-low p-2.5 rounded-lg border border-outline-variant/40">
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label htmlFor={`${idPrefix}-from-date`} className={labelClass}>From date</label>
+          <input
+            id={`${idPrefix}-from-date`}
+            type="date"
+            value={fromDate}
+            min="2015-07-30"
+            max={today}
+            onChange={(e) => onFromDate(e.target.value)}
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label htmlFor={`${idPrefix}-to-date`} className={labelClass}>To date</label>
+          <input
+            id={`${idPrefix}-to-date`}
+            type="date"
+            value={toDate}
+            min="2015-07-30"
+            max={today}
+            onChange={(e) => onToDate(e.target.value)}
+            className={inputClass}
+          />
+        </div>
+      </div>
+      <div>
+        <label htmlFor={`${idPrefix}-order`} className={labelClass}>Order</label>
+        <select
+          id={`${idPrefix}-order`}
+          value={sortOrder}
+          onChange={(e) => onSortOrder(e.target.value)}
+          className={inputClass}
+        >
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
+      </div>
+      {invalid && (
+        <p className="text-[11px] text-error font-medium" role="alert">
+          "From date" must be on or before "To date".
+        </p>
+      )}
+      <p className="text-[10px] text-on-surface-variant leading-snug">
+        Investigators: set the window around the incident date. Oldest-first within the window shows the earliest activity.
+      </p>
+    </div>
+  );
+};
 
 export const InvestigateScreen = () => {
   const {
@@ -28,6 +101,8 @@ export const InvestigateScreen = () => {
     showToast,
     actionLoading,
     setActionLoading,
+    traceScope,
+    limitedWallets,
   } = useInvestigation();
 
   // Filter input state
@@ -40,6 +115,39 @@ export const InvestigateScreen = () => {
   );
   const [hops, setHops] = useState(2);
   const [txPerWallet, setTxPerWallet] = useState(15);
+
+  // Date window + order for "Investigate a Wallet"
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [sortOrder, setSortOrder] = useState('desc');
+  const dateRangeInvalid = Boolean(fromDate && toDate && fromDate > toDate);
+  const traceWindow = { from_date: fromDate || undefined, to_date: toDate || undefined, sort: sortOrder };
+
+  // Separate date window + order for "Trace a Specific Path"
+  const [pathFromDate, setPathFromDate] = useState('');
+  const [pathToDate, setPathToDate] = useState('');
+  const [pathSortOrder, setPathSortOrder] = useState('desc');
+  const pathRangeInvalid = Boolean(pathFromDate && pathToDate && pathFromDate > pathToDate);
+
+  const [showCapped, setShowCapped] = useState(false);
+
+  // When a new scope arrives (curated case, reopened saved case), mirror it in the form
+  const appliedScopeKey = useRef(null);
+  useEffect(() => {
+    if (!traceScope) return;
+    const key = JSON.stringify(traceScope);
+    if (appliedScopeKey.current === key) return;
+    appliedScopeKey.current = key;
+    setFromDate(traceScope.from_date || '');
+    setToDate(traceScope.to_date || '');
+    setSortOrder(traceScope.sort === 'asc' ? 'asc' : 'desc');
+    if (traceScope.tx_per_wallet) setTxPerWallet(Math.min(30, Math.max(5, Number(traceScope.tx_per_wallet))));
+    if (traceScope.hops) setHops(Math.min(3, Math.max(1, Number(traceScope.hops))));
+    if (traceScope.chain && chains.includes(traceScope.chain)) setSelectedChain(traceScope.chain);
+  }, [traceScope, chains]);
+
+  const scopeLine = describeScope(traceScope);
+  const capWarning = describeCap(limitedWallets, traceScope?.tx_per_wallet ?? txPerWallet);
 
   // Path Finder Form
   const [pathSource, setPathSource] = useState('0x098B716B8Aaf21512996dC57EB0615e2383E2f96');
@@ -76,6 +184,10 @@ export const InvestigateScreen = () => {
       showToast('Please enter a target wallet address.', 'warning');
       return;
     }
+    if (dateRangeInvalid) {
+      showToast('"From date" must be on or before "To date".', 'warning');
+      return;
+    }
     setActionLoading(true);
     try {
       showToast(`Tracing wallet ${targetWallet.slice(0, 8)}...`, 'info');
@@ -84,6 +196,7 @@ export const InvestigateScreen = () => {
         hops: Number(hops),
         tx_per_wallet: Number(txPerWallet),
         chain: selectedChain,
+        ...traceWindow,
       });
       setStartWallet(data.start_wallet);
       resetPathView();
@@ -105,6 +218,10 @@ export const InvestigateScreen = () => {
       showToast('Enter both a source and destination wallet.', 'warning');
       return;
     }
+    if (pathRangeInvalid) {
+      showToast('"From date" must be on or before "To date".', 'warning');
+      return;
+    }
     setActionLoading(true);
     try {
       showToast('Searching for transaction route...', 'info');
@@ -112,9 +229,14 @@ export const InvestigateScreen = () => {
         source: pathSource.trim(),
         destination: pathDestination.trim(),
         max_hops: Number(maxHops),
-        tx_per_wallet: 15,
+        tx_per_wallet: Number(txPerWallet),
         chain: selectedChain,
+        from_date: pathFromDate || undefined,
+        to_date: pathToDate || undefined,
+        sort: pathSortOrder,
       });
+      // The path search's own window shouldn't be copied into the wallet-trace form.
+      if (data.scope) appliedScopeKey.current = JSON.stringify(data.scope);
 
       if (!data.found || !data.paths || data.paths.length === 0) {
         setActivePathEdges(null);
@@ -285,15 +407,15 @@ export const InvestigateScreen = () => {
             </div>
 
             <div className="flex flex-col gap-2">
-              {[
-                { name: 'Ronin Bridge Hack ($600M, 2022)', badge: '$600M', sub: 'Lazarus Group OFAC' },
-                { name: 'Poly Network Hack ($611M, 2021)', badge: '$611M', sub: 'Cross-chain DeFi' },
-                { name: 'Wormhole Bridge Hack ($321M, 2022)', badge: '$321M', sub: 'Solana-ETH Bridge' },
-              ].map((c) => (
+              {CURATED_CASE_CARDS.map((card) => ({
+                ...card,
+                ...(curatedCases.find((cc) => cc.name === card.name) || {}),
+              })).map((c) => (
                 <button
                   key={c.name}
                   onClick={() => handleLoadCuratedCase(c.name)}
                   disabled={actionLoading}
+                  title={c.date_note || c.description || ''}
                   className="flex items-center justify-between p-2.5 rounded-lg bg-surface hover:bg-primary/10 border border-outline-variant/50 group transition-all text-left shadow-xs disabled:opacity-50"
                 >
                   <div className="flex flex-col">
@@ -302,7 +424,13 @@ export const InvestigateScreen = () => {
                     </span>
                     <span className="text-[10px] text-on-surface-variant font-address-md">
                       {c.sub}
+                      {c.incident_date && <> · Incident {c.incident_date}</>}
                     </span>
+                    {c.from_date && (
+                      <span className="text-[10px] text-on-surface-variant/80">
+                        Traces {c.from_date} to {c.to_date}, oldest first
+                      </span>
+                    )}
                   </div>
                   <span className="material-symbols-outlined text-on-surface-variant/40 group-hover:text-primary text-[18px] transition-transform group-hover:translate-x-0.5">
                     arrow_forward
@@ -354,6 +482,17 @@ export const InvestigateScreen = () => {
                 />
               </div>
 
+              {/* Date window + order */}
+              <DateWindowFields
+                idPrefix="trace"
+                fromDate={fromDate}
+                toDate={toDate}
+                sortOrder={sortOrder}
+                onFromDate={setFromDate}
+                onToDate={setToDate}
+                onSortOrder={setSortOrder}
+              />
+
               {/* Sliders: Hops and Tx per wallet */}
               <div className="grid grid-cols-2 gap-3 bg-surface-container-low p-2.5 rounded-lg border border-outline-variant/40">
                 <div>
@@ -391,7 +530,7 @@ export const InvestigateScreen = () => {
               {/* Expand Graph Action Button */}
               <button
                 type="submit"
-                disabled={actionLoading}
+                disabled={actionLoading || dateRangeInvalid}
                 className="w-full bg-primary text-white hover:bg-primary-container py-2.5 rounded-lg font-label-caps text-xs uppercase shadow-md transition-all font-bold flex items-center justify-center gap-1.5 active:scale-98 disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[16px]">account_tree</span>
@@ -455,9 +594,23 @@ export const InvestigateScreen = () => {
                 />
               </div>
 
+              <DateWindowFields
+                idPrefix="path"
+                fromDate={pathFromDate}
+                toDate={pathToDate}
+                sortOrder={pathSortOrder}
+                onFromDate={setPathFromDate}
+                onToDate={setPathToDate}
+                onSortOrder={setPathSortOrder}
+              />
+
+              <p className="text-[10px] text-on-surface-variant leading-snug">
+                Uses the Tx / Wallet cap set above ({txPerWallet} per wallet).
+              </p>
+
               <button
                 type="submit"
-                disabled={actionLoading}
+                disabled={actionLoading || pathRangeInvalid}
                 className="w-full bg-surface-container hover:bg-surface-variant text-on-surface py-2 rounded font-label-caps text-[11px] uppercase border border-outline-variant transition-colors font-bold flex items-center justify-center gap-1 shadow-xs disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[16px]">route</span>
@@ -468,8 +621,59 @@ export const InvestigateScreen = () => {
         </div>
 
         {/* Main Graph Visualization Canvas */}
-        <div className="flex-1 h-full relative">
-          <GraphCanvas filterQuery={filterQuery} onSelectWallet={handleSelectWallet} />
+        <div className="flex-1 h-full relative flex flex-col min-w-0">
+          {edges.length > 0 && (
+            <div className="flex-none bg-surface border-b border-outline-variant/60 px-4 py-2 flex flex-col gap-2 z-10">
+              <div className="flex items-start gap-2 text-xs text-on-surface">
+                <span className="material-symbols-outlined text-[16px] text-primary">date_range</span>
+                <span className="font-medium">
+                  <span className="font-label-caps uppercase text-[10px] text-on-surface-variant font-bold mr-1.5">Scope</span>
+                  {scopeLine || 'Not recorded for this graph (traced before scopes were saved).'}
+                </span>
+              </div>
+              {traceScope?.date_note && (
+                <p className="text-[11px] text-on-surface-variant pl-6">{traceScope.date_note}</p>
+              )}
+              {capWarning && (
+                <div className="rounded-lg border border-[#F2A93B]/50 bg-[#F2A93B]/10 px-3 py-2 text-xs text-on-surface" role="status">
+                  <div className="flex items-start gap-2">
+                    <span className="material-symbols-outlined text-[16px] text-[#B7791F]">warning</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium">{capWarning}</p>
+                      <button
+                        type="button"
+                        onClick={() => setShowCapped((v) => !v)}
+                        aria-expanded={showCapped}
+                        className="mt-1 text-[11px] font-label-caps uppercase font-bold text-[#B7791F] hover:underline flex items-center gap-0.5"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">{showCapped ? 'expand_less' : 'expand_more'}</span>
+                        {showCapped ? 'Hide' : 'Show'} capped wallets ({limitedWallets.length})
+                      </button>
+                      {showCapped && (
+                        <ul className="mt-1.5 max-h-32 overflow-y-auto flex flex-col gap-1">
+                          {limitedWallets.map((w) => (
+                            <li key={w}>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectWallet(w)}
+                                className="font-mono text-[11px] text-on-surface hover:text-primary break-all text-left"
+                                title="Use as target wallet"
+                              >
+                                {w}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex-1 relative min-h-0">
+            <GraphCanvas filterQuery={filterQuery} onSelectWallet={handleSelectWallet} />
+          </div>
         </div>
       </div>
 

@@ -142,10 +142,13 @@ def check_case_number_unique(case_number: str, current_case_name: Optional[str] 
 
 
 def build_case_snapshot(case_number: str, name: str, start_wallet: str, edges: list,
-                        findings: Optional[dict] = None, saved_at: Optional[str] = None) -> Tuple[dict, str]:
+                        findings: Optional[dict] = None, saved_at: Optional[str] = None,
+                        scope: Optional[dict] = None) -> Tuple[dict, str]:
     """Builds a canonical JSON snapshot of the case and returns (snapshot_dict, sha256_hash).
 
     Deterministic serialization: sorted keys, canonicalized numbers, compact separators.
+    The trace scope (date window, order, caps) is added only when present, so cases saved
+    before scopes existed produce the same snapshot and hash as when they were anchored.
     """
     timestamp = saved_at or datetime.now().isoformat()
 
@@ -174,6 +177,8 @@ def build_case_snapshot(case_number: str, name: str, start_wallet: str, edges: l
         },
         "findings": findings or {},
     }
+    if scope:
+        snapshot["scope"] = scope
 
     canonical_obj = _canonicalize_numbers(snapshot)
     canonical_json = json.dumps(canonical_obj, sort_keys=True, separators=(",", ":"))
@@ -183,7 +188,8 @@ def build_case_snapshot(case_number: str, name: str, start_wallet: str, edges: l
 
 
 def save_case(name: str, start_wallet: str, edges: list, case_number: Optional[str] = None,
-              findings: Optional[dict] = None, blockchain_meta: Optional[dict] = None) -> dict:
+              findings: Optional[dict] = None, blockchain_meta: Optional[dict] = None,
+              scope: Optional[dict] = None) -> dict:
     """Saves a case locally under cases/<safe_name>.json.
 
     Args:
@@ -193,6 +199,7 @@ def save_case(name: str, start_wallet: str, edges: list, case_number: Optional[s
         case_number: Unique case number (validated, or auto-generated if None/blank).
         findings: Optional findings snapshot.
         blockchain_meta: Optional on-chain metadata (cid, tx_hash, blockchain_status, etc.)
+        scope: Optional trace scope (dates, order, tx cap, hops, chain) the graph was built with.
 
     Returns:
         dict containing the saved case payload including case_number, path, case_data_hash.
@@ -211,7 +218,8 @@ def save_case(name: str, start_wallet: str, edges: list, case_number: Optional[s
 
     saved_at = datetime.now().isoformat()
     snapshot, case_data_hash = build_case_snapshot(
-        validated_case_num, safe_name, start_wallet, edges, findings=findings, saved_at=saved_at
+        validated_case_num, safe_name, start_wallet, edges, findings=findings, saved_at=saved_at,
+        scope=scope,
     )
 
     meta = blockchain_meta or {}
@@ -233,6 +241,7 @@ def save_case(name: str, start_wallet: str, edges: list, case_number: Optional[s
         "edge_count": len(formatted_edges),
         "edges": formatted_edges,
         "findings": findings or {},
+        "scope": scope,
         "case_data_hash": case_data_hash,
         "blockchain_status": blockchain_status,
         "cid": meta.get("cid"),
@@ -300,6 +309,7 @@ def list_cases() -> List[Dict[str, Any]]:
                 "chain_error": data.get("chain_error"),
                 "encrypted": data.get("encrypted", False),
                 "encryption_version": data.get("encryption_version"),
+                "scope": data.get("scope"),
             }
             cases.append(case_info)
         except (json.JSONDecodeError, KeyError, OSError):

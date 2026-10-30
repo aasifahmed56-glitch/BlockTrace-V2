@@ -24,7 +24,8 @@ from reportlab.platypus import (
 )
 
 from logic import (
-    short, risk_tier, compute_wallet_risk, build_narrative, check_sanctions
+    short, risk_tier, compute_wallet_risk, build_narrative, check_sanctions,
+    describe_scope, describe_cap, describe_sanctions_snapshot
 )
 from report_theme import (
     COLOR_PRIMARY_DARK, COLOR_PRIMARY_ACCENT, COLOR_BG_CREAM,
@@ -156,13 +157,17 @@ def narrative_to_reportlab_markup(html_text):
     return text
 
 
-def generate_report(start_wallet, output_path="investigation_report.pdf", certificate_info=None, data_window=None):
+def generate_report(start_wallet, output_path="investigation_report.pdf", certificate_info=None, data_window=None,
+                    scope=None, limited_wallets=None):
     """Generates the official BlockTrace forensic PDF dossier.
 
     Args:
         start_wallet: Initial subject/target wallet address.
         output_path: Path where the generated PDF will be saved.
         certificate_info: Optional dict with 'certificate_hash', 'previous_hash', 'created_at'.
+        data_window: Optional "Data window: ..." line; computed from the graph if omitted.
+        scope: Optional trace scope (dates, order, tx cap, hops, chain) shown as "Investigation scope".
+        limited_wallets: Wallets whose transactions were cut off by the per-wallet cap.
     """
     styles = build_report_styles()
     doc = SimpleDocTemplate(
@@ -194,7 +199,12 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
     with driver.session(database=NEO4J_DATABASE) as session:
         wallets, txs = get_summary_stats(session)
         dw = data_window or get_data_window(session)
-        elements.append(build_header_band(start_wallet, gen_time_str, styles, investigation_id=inv_id, data_window=dw))
+        header_rows = [("Investigation scope", describe_scope(scope) or "Not recorded for this graph")]
+        if limited_wallets:
+            header_rows.append(("Transaction cap", describe_cap(limited_wallets)))
+        header_rows.append(("Sanctions list", describe_sanctions_snapshot()))
+        elements.append(build_header_band(start_wallet, gen_time_str, styles, investigation_id=inv_id,
+                                          data_window=dw, extra_rows=header_rows))
         elements.append(Spacer(1, 10))
         hub_data = get_hub_wallets(session)
         fanout_data = get_fanout_wallets(session)
@@ -283,13 +293,14 @@ def generate_report(start_wallet, output_path="investigation_report.pdf", certif
             )
         else:
             sanctions_content = Paragraph(
-                "No wallets in this trace matched the built-in sanctions list.",
+                "No wallets in this trace matched the OFAC sanctions list snapshot.",
                 styles['Body']
             )
 
         add_section(
             "Sanctions Screening",
-            "Cross-referencing against the built-in sanctions list.",
+            f"Cross-referencing against the OFAC SDN list ({describe_sanctions_snapshot()}). "
+            "A dated snapshot; verify matches against official OFAC sources.",
             sanctions_content,
             COLOR_SANCTIONED
         )

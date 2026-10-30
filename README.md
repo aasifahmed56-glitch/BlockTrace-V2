@@ -1,6 +1,6 @@
 # BlockTrace: Autonomous Blockchain Forensic Intelligence Platform
 
-BlockTrace is a full-stack, tamper-evident blockchain forensic intelligence and investigation platform that reconstructs, analyzes, and visualizes complex illicit cryptocurrency transaction networks across EVM blockchains. By combining high-performance multi-hop graph querying in Neo4j with automated forensic heuristics, built-in OFAC sanctions screening, cryptographic findings certification, and immutable decentralized ledger anchoring, BlockTrace empowers financial intelligence units, law enforcement agencies, and compliance officers to transform raw blockchain data into tamper-evident evidentiary dossiers.
+BlockTrace is a full-stack, tamper-evident blockchain forensic intelligence and investigation platform that reconstructs, analyzes, and visualizes complex illicit cryptocurrency transaction networks across EVM blockchains. By combining high-performance multi-hop graph querying in Neo4j with automated forensic heuristics, OFAC SDN sanctions screening, cryptographic findings certification, and immutable decentralized ledger anchoring, BlockTrace empowers financial intelligence units, law enforcement agencies, and compliance officers to transform raw blockchain data into tamper-evident evidentiary dossiers.
 
 > **Note**: Ethereum Sepolia is a public testnet; testnet transactions and tokens carry no real economic value.
 
@@ -14,7 +14,8 @@ BlockTrace is a full-stack, tamper-evident blockchain forensic intelligence and 
   - *Dispersal / Fan-Out*: High-frequency rapid distribution of funds to multiple fresh or burner wallets.
   - *Layering & Cycles*: Circular fund routing designed to obfuscate origin and artificially inflate transaction counts.
   - *Mixer & Bridge Touchpoints*: Direct and indirect hops to known mixers (e.g., Tornado Cash) and cross-chain bridges.
-- **Built-in OFAC Sanctions Screening**: Case-insensitive screening cross-referencing discovered addresses against a built-in list of OFAC-sanctioned entities and known cybercrime syndicates (e.g., Lazarus Group).
+- **OFAC Sanctions Screening**: Case-insensitive screening of every discovered address against a dated snapshot of the U.S. Treasury OFAC SDN list (all EVM `0x` addresses, treated as sanctioned on Ethereum, BNB Chain and Polygon alike), plus a few hand-annotated entries such as the Lazarus Group's Ronin exploiter. The snapshot lives in `data/sanctions_ofac.json`; its publication date and size are shown in the UI, the PDF dossier and `/sanctions/check`. It is not a live feed — see [Refreshing the OFAC sanctions list](#refreshing-the-ofac-sanctions-list).
+- **Date-Scoped Traces**: Each wallet contributes at most *Tx / Wallet* transactions (default 15) to a trace, so a trace is a sample, not the full history. Set a *From / To date* window around the incident and choose *Oldest first* to see the earliest activity in that window. The scope (dates, order, cap, hops, chain) is shown above the graph, saved with each case and printed in the PDF dossier, and wallets that hit the cap are marked.
 - **Cryptographic Findings Certificates**: Deterministic, structured findings metadata signed and digested using SHA-256 to guarantee analytical repeatability.
 - **Audit-Ready PDF Dossier Reports**: Vector-rendered PDF forensic reports containing executive summaries, high-risk wallet catalogs, and forensic heuristic breakdowns.
 - **Workspace Case Manager**: Persistent investigation case manager supporting case naming, customized case numbers (e.g., `BT-2026-0001`), graph session saving, loading, versioning, and catalog indexing.
@@ -310,3 +311,18 @@ Frontend interface will be live at `http://localhost:5173`.
 - **Zero-Knowledge Evidence Proofs**: ZK-SNARK attestations allowing compliance officers to prove fund origin compliance without revealing the proprietary graph topology.
 - **Decentralized Investigator Credentials (DID)**: W3C DID and ERC-725 integration for institutional signing of forensic reports.
 - **Collaborative Multi-Agency Workspaces**: Real-time multi-user investigation rooms secured by threshold cryptosystems and multi-party computation (MPC).
+
+## Refreshing the OFAC sanctions list
+
+`data/sanctions_ofac.json` is generated from the official SDN list published by the
+U.S. Treasury OFAC Sanctions List Service
+(`https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML`).
+The backend reads this committed snapshot at startup and never downloads the list itself.
+
+```bash
+python scripts/update_sanctions.py
+```
+
+The script rebuilds the snapshot from scratch, so delisted addresses (such as the Tornado Cash
+addresses removed in March 2025) drop out. Commit the regenerated file and redeploy the backend.
+Matches are indicators only: always confirm them against official OFAC sources.

@@ -32,6 +32,7 @@ export const FindingsScreen = () => {
   const {
     startWallet,
     sanctions,
+    sanctionsSnapshot,
     riskData,
     narrativeParagraphs,
     hubDetections,
@@ -198,6 +199,11 @@ export const FindingsScreen = () => {
               </div>
             )}
           </div>
+
+          <p className="text-[10px] text-on-surface-variant leading-snug">
+            {sanctionsSnapshot?.label || 'OFAC list snapshot: loading…'}. A dated snapshot of the U.S. Treasury
+            SDN list, not a live feed; verify any match against official OFAC sources.
+          </p>
         </section>
 
         {/* Wallet Risk Overview (2 columns) */}

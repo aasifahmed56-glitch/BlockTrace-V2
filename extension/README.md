@@ -41,7 +41,7 @@ extension/
 
 2. **Check Address**:
    - Validate 42-character Ethereum addresses (`0x` + 40 hex).
-   - Checks against the built-in OFAC-based sanctions list.
+   - Checks against a dated snapshot of the OFAC SDN list (the response includes its publication date).
    - Displays `SANCTIONED` or `NOT ON LIST` badge with identified entity labels.
    - Direct button to open the full investigation workspace on BlockTrace Web.
 
@@ -113,7 +113,7 @@ extension/
 4. **Expected Outcome**:
    - Red **SANCTIONED** badge appears.
    - Entity label: *"Ronin Bridge Hacker (Lazarus Group)"*.
-   - Source: *"built-in OFAC-based list"*.
+   - Source: *"OFAC SDN list snapshot"*.
 
 ### Test 5: Sanctions Check (Clean Address)
 1. In the **Check Address** tab, enter a standard clean address:

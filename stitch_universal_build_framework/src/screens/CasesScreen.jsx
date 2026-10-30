@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useInvestigation } from '../context/InvestigationContext';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { describeScope } from '../utils/scope';
 import {
   fetchSavedCases,
   saveCase,
@@ -227,7 +228,12 @@ export const CasesScreen = () => {
       const res = await loadSavedCase(caseName);
       await refreshGraphAndSummary();
       await refreshFindings(res.start_wallet);
-      showToast(`Case "${caseName}" loaded successfully (${res.edge_count} edges).`, 'success');
+      const scopeLine = describeScope(res.scope);
+      showToast(
+        `Case "${caseName}" loaded successfully (${res.edge_count} edges).` +
+          (scopeLine ? ` Scope: ${scopeLine}. The Investigate form now uses this window.` : ''),
+        'success'
+      );
     } catch (err) {
       console.error(err);
       showToast(getErrorMessage(err), 'error');
@@ -561,7 +567,15 @@ export const CasesScreen = () => {
                           <span className="material-symbols-outlined text-primary text-[18px]">
                             folder_open
                           </span>
-                          <span>{c.name}</span>
+                          <div className="flex flex-col">
+                            <span>{c.name}</span>
+                            <span
+                              className="text-[10px] font-normal text-on-surface-variant font-address-md"
+                              title={c.scope?.date_note || ''}
+                            >
+                              {describeScope(c.scope) || 'Scope not recorded'}
+                            </span>
+                          </div>
                         </div>
                       </td>
 

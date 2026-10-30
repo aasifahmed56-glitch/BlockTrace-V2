@@ -88,6 +88,36 @@ def compute_wallet_risk(hub_data, fanout_data, peel_data, round_data, circular_d
     return rows
 
 
+def describe_scope(scope):
+    """One line saying what a trace covered, e.g. "Transactions 2022-03-23 to 2022-03-30 ·
+    oldest first · up to 15 per wallet · 2 hops · Ethereum". Returns None without a scope."""
+    if not scope:
+        return None
+    cap = scope.get("tx_per_wallet")
+    order = "oldest first" if scope.get("sort") == "asc" else "newest first"
+    start, end = scope.get("from_date"), scope.get("to_date")
+    if start or end:
+        parts = [f"Transactions {start or 'start'} to {end or 'today'}", order]
+        if cap:
+            parts.append(f"up to {cap} per wallet")
+    else:
+        parts = [f"All dates ({'oldest' if scope.get('sort') == 'asc' else 'newest'} {cap} per wallet)"]
+    if scope.get("hops"):
+        parts.append(f"{scope['hops']} hops")
+    if scope.get("chain"):
+        parts.append(scope["chain"])
+    if scope.get("incident_date"):
+        parts.append(f"incident {scope['incident_date']}")
+    return " · ".join(parts)
+
+
+def describe_cap(limited_wallets):
+    """The dossier's warning when the per-wallet transaction cap cut a trace short."""
+    if not limited_wallets:
+        return None
+    return f"Cap reached for {len(limited_wallets)} wallets; results are a sample, not the full history."
+
+
 def build_narrative(start_wallet, wallets_count, txs_count, hub_data, fanout_data, peel_data,
                      round_data=None, circular_data=None, risk_rows=None):
     """Builds a plain-English summary from detection results. Uses cautious, non-absolute
@@ -182,16 +212,68 @@ def build_narrative(start_wallet, wallets_count, txs_count, hub_data, fanout_dat
 # its authority, and Treasury formally lifted those sanctions in March 2025. A hardcoded
 # list that still flagged Tornado Cash today would itself be spreading false information.
 #
-# For any real deployment, this list must be synced from the live OFAC SDN feed
-# (treasury.gov publishes a machine-readable list of crypto addresses), not hand-maintained.
+# So the list is not hand-maintained: data/sanctions_ofac.json is a dated snapshot of every
+# EVM address on the OFAC SDN list, regenerated from scratch by scripts/update_sanctions.py
+# (which drops delisted addresses) and committed, so the server needs no network at startup.
+# A 0x address listed under any EVM currency is treated as sanctioned on every EVM chain
+# BlockTrace supports (Ethereum, BNB Chain, Polygon) — it is the same account on each.
+#
+# Manual entries below add richer context for addresses we describe elsewhere in the app;
+# their fields override the snapshot's for the same address.
 
-SANCTIONED_ADDRESSES = {
+import json
+import os as _os
+
+OFAC_SNAPSHOT_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "sanctions_ofac.json")
+
+MANUAL_SANCTIONED_ADDRESSES = {
     "0x098b716b8aaf21512996dc57eb0615e2383e2f96": {
         "name": "Ronin Bridge Hacker (Lazarus Group)",
         "authority": "U.S. Treasury OFAC",
         "note": "Sanctioned April 2022 following the $600M Ronin Bridge exploit."
     },
 }
+
+
+def load_sanctions(snapshot_path=OFAC_SNAPSHOT_PATH, manual=None):
+    """Merges the OFAC snapshot with the manual entries. Returns (addresses, metadata).
+
+    A missing or unreadable snapshot is not fatal: screening falls back to the manual
+    entries alone, and the metadata says no snapshot was loaded."""
+    manual = MANUAL_SANCTIONED_ADDRESSES if manual is None else manual
+    meta = {"source_url": None, "fetched_at": None, "list_publication_date": None, "count": 0}
+    snapshot_addresses = {}
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+        raw = snapshot.get("addresses")
+        if not isinstance(raw, dict):
+            raise ValueError("snapshot has no address map")
+        snapshot_addresses = {addr.lower(): dict(entry) for addr, entry in raw.items() if isinstance(entry, dict)}
+        meta.update(
+            source_url=snapshot.get("source_url"),
+            fetched_at=snapshot.get("fetched_at"),
+            list_publication_date=snapshot.get("list_publication_date"),
+            count=len(snapshot_addresses),
+        )
+    except (OSError, ValueError, AttributeError):
+        snapshot_addresses = {}
+
+    merged = snapshot_addresses
+    for addr, entry in manual.items():
+        merged[addr.lower()] = {**merged.get(addr.lower(), {}), **entry}
+    return merged, meta
+
+
+SANCTIONED_ADDRESSES, SANCTIONS_META = load_sanctions()
+
+
+def describe_sanctions_snapshot(meta=None):
+    """One line naming the snapshot date and size, for the UI and the PDF dossier."""
+    meta = SANCTIONS_META if meta is None else meta
+    if not meta.get("list_publication_date"):
+        return "OFAC list snapshot unavailable; only built-in entries were checked."
+    return f"OFAC list snapshot: {meta['list_publication_date']}, {meta['count']} addresses"
 
 
 def check_sanctions(wallet_addresses):

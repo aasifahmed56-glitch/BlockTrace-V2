@@ -92,23 +92,35 @@ export const loadCuratedCase = async (caseName) => {
 };
 
 // Investigation & Tracing
-export const expandWallet = async ({ wallet, hops = 2, tx_per_wallet = 15, chain = 'Ethereum' }) => {
+
+// Date window + order for /expand and /path. Empty dates are omitted so the
+// backend falls back to "all dates"; sort is 'desc' (newest first) or 'asc'.
+const traceWindow = ({ from_date, to_date, sort = 'desc' }) => {
+  const window = { sort: sort === 'asc' ? 'asc' : 'desc' };
+  if (from_date) window.from_date = from_date;
+  if (to_date) window.to_date = to_date;
+  return window;
+};
+
+export const expandWallet = async ({ wallet, hops = 2, tx_per_wallet = 15, chain = 'Ethereum', from_date, to_date, sort }) => {
   const { data } = await api.post('/expand', {
     wallet,
     hops: Number(hops),
     tx_per_wallet: Number(tx_per_wallet),
     chain,
+    ...traceWindow({ from_date, to_date, sort }),
   });
   return data;
 };
 
-export const findPath = async ({ source, destination, max_hops = 4, tx_per_wallet = 15, chain = 'Ethereum' }) => {
+export const findPath = async ({ source, destination, max_hops = 4, tx_per_wallet = 15, chain = 'Ethereum', from_date, to_date, sort }) => {
   const { data } = await api.post('/path', {
     source,
     destination,
     max_hops: Number(max_hops),
     tx_per_wallet: Number(tx_per_wallet),
     chain,
+    ...traceWindow({ from_date, to_date, sort }),
   });
   return data;
 };
@@ -138,6 +150,20 @@ export const fetchNarrative = async (startWallet) => {
 export const fetchSanctions = async () => {
   const { data } = await api.get('/sanctions');
   return data.matches || [];
+};
+
+// Same endpoint, with the OFAC snapshot's date and size alongside the matches.
+export const fetchSanctionsWithSnapshot = async () => {
+  const { data } = await api.get('/sanctions');
+  return {
+    matches: data.matches || [],
+    snapshot: {
+      list_publication_date: data.list_publication_date || null,
+      fetched_at: data.fetched_at || null,
+      count: data.count || 0,
+      label: data.snapshot_label || null,
+    },
+  };
 };
 
 export const fetchRiskOverview = async () => {

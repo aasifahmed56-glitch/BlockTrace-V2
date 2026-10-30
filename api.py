@@ -33,7 +33,7 @@ from neo4j.exceptions import ServiceUnavailable, SessionExpired
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime, timezone
 
 from logic import (
@@ -115,27 +115,92 @@ CHAIN_OPTIONS = {
     "Polygon": 137,
 }
 
+# Each window starts on the day of the first large incoming transfer to the listed
+# address (checked against Etherscan), and is traced oldest-first so the graph shows
+# the incident itself rather than the wallet's most recent activity.
 CURATED_CASES = {
     "Ronin Bridge Hack ($600M, 2022)": {
         "address": "0x098B716B8Aaf21512996dC57EB0615e2383E2f96",
         "chainid": 1,
         "description": "Wallet linked to the Axie Infinity / Ronin Bridge exploit. "
-                        "Sanctioned by the U.S. Treasury (OFAC) and attributed to the Lazarus Group."
+                        "Sanctioned by the U.S. Treasury (OFAC) and attributed to the Lazarus Group.",
+        "incident_date": "2022-03-23",
+        "from_date": "2022-03-23",
+        "to_date": "2022-04-30",
+        "sort": "asc",
+        "date_note": "Exploited 2022-03-23 (disclosed 2022-03-29); laundering through Tornado Cash "
+                     "began around late April 2022.",
     },
     "Poly Network Hack ($611M, 2021)": {
         "address": "0xC8a65Fadf0e0dDAf421F28FEAb69Bf6E2E589963",
         "chainid": 1,
         "description": "Largest DeFi exploit at the time, draining assets across Ethereum, BSC, "
                         "and Polygon. Most funds were later voluntarily returned by the attacker, "
-                        "but the full on-chain trail remains public."
+                        "but the full on-chain trail remains public.",
+        "incident_date": "2021-08-10",
+        "from_date": "2021-08-10",
+        "to_date": "2021-08-31",
+        "sort": "asc",
+        "date_note": "Exploited 2021-08-10; the attacker returned the funds over the following days.",
     },
     "Wormhole Bridge Hack ($321M, 2022)": {
         "address": "0x629e7Da20197a5429d30da36E77D06CdF796b71a",
         "chainid": 1,
         "description": "Exploit of the Ethereum-Solana Wormhole token bridge. This address is "
-                        "directly labeled 'Wormhole Network Exploiter' on Etherscan."
-    }
+                        "directly labeled 'Wormhole Network Exploiter' on Etherscan.",
+        "incident_date": "2022-02-02",
+        "from_date": "2022-02-02",
+        "to_date": "2022-02-09",
+        "sort": "asc",
+        "date_note": "Exploited 2022-02-02, when 80,000 wETH was minted to this address.",
+    },
 }
+
+# The scope of the most recent trace in each workspace (dates, order, caps), so the
+# summary, saved cases and the PDF dossier can say what the graph actually covers.
+# In memory only: after a restart a trace simply reports no scope.
+_LAST_TRACE = {}
+_LAST_TRACE_LOCK = Lock()
+
+
+def normalize_sort(sort):
+    return "asc" if (sort and sort.lower() in ("asc", "oldest", "oldest first")) else "desc"
+
+
+def build_scope(from_date=None, to_date=None, sort="desc", tx_per_wallet=15, hops=None, chain="Ethereum", **extra):
+    """The trace parameters as reported to clients; unset dates stay None."""
+    scope = {
+        "from_date": from_date or None,
+        "to_date": to_date or None,
+        "sort": normalize_sort(sort),
+        "tx_per_wallet": tx_per_wallet,
+        "hops": hops,
+        "chain": chain,
+    }
+    scope.update({k: v for k, v in extra.items() if v is not None})
+    return scope
+
+
+def remember_trace(scope, limited_wallets):
+    with _LAST_TRACE_LOCK:
+        _LAST_TRACE[workspace.current()] = {
+            "scope": scope,
+            "limited_wallets": list(limited_wallets or []),
+        }
+
+
+def current_trace():
+    with _LAST_TRACE_LOCK:
+        return _LAST_TRACE.get(workspace.current(), {"scope": None, "limited_wallets": []})
+
+
+def forget_trace():
+    with _LAST_TRACE_LOCK:
+        _LAST_TRACE.pop(workspace.current(), None)
+
+
+def cap_note(limited_wallets, tx_per_wallet):
+    return f"Showing {tx_per_wallet} of the wallet's transactions" if limited_wallets else None
 
 app = FastAPI(
     title="BlockTrace API",
@@ -242,23 +307,44 @@ async def _generic_exception_handler(request: Request, exc: Exception):
 
 # ==================== Request/response models ====================
 
-class ExpandRequest(BaseModel):
-    wallet: str
-    hops: int = Field(2, ge=1, le=3)
+class TraceWindow(BaseModel):
+    """Optional date window and order shared by /expand and /path.
+
+    Dates must be YYYY-MM-DD: anything else used to be silently ignored, which made a
+    trace look date-limited when it was not."""
     from_date: Optional[str] = None
     to_date: Optional[str] = None
     sort: Optional[str] = "desc"
+
+    @field_validator("from_date", "to_date")
+    @classmethod
+    def _check_date(cls, value):
+        if value is None or not value.strip():
+            return None
+        try:
+            datetime.strptime(value.strip(), "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("must be a date in YYYY-MM-DD format")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _check_order(self):
+        if self.from_date and self.to_date and self.from_date > self.to_date:
+            raise ValueError("from_date must be on or before to_date")
+        return self
+
+
+class ExpandRequest(TraceWindow):
+    wallet: str
+    hops: int = Field(2, ge=1, le=3)
     tx_per_wallet: int = Field(15, ge=5, le=30)
     chain: str = "Ethereum"
 
 
-class PathRequest(BaseModel):
+class PathRequest(TraceWindow):
     source: str
     destination: str
     max_hops: int = Field(4, ge=1, le=6)
-    from_date: Optional[str] = None
-    to_date: Optional[str] = None
-    sort: Optional[str] = "desc"
     tx_per_wallet: int = Field(15, ge=5, le=30)
     chain: str = "Ethereum"
 
@@ -388,9 +474,9 @@ def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startb
         for hop in range(hops):
             next_layer = set()
             for wallet in current_layer:
-                if wallet in visited:
+                if wallet.lower() in visited:
                     continue
-                visited.add(wallet)
+                visited.add(wallet.lower())
                 txs, hit_limit = fetch_transactions(
                     wallet, limit=tx_per_wallet, chainid=chainid,
                     startblock=startblock, endblock=endblock, sort=sort
@@ -400,7 +486,7 @@ def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startb
                 new_wallets = load_transactions(session, txs)
                 next_layer.update(new_wallets)
                 time.sleep(0.25)
-            current_layer = next_layer - visited
+            current_layer = {w for w in next_layer if w.lower() not in visited}
     return len(visited), limit_hit_wallets
 
 
@@ -418,9 +504,9 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
         for hop in range(max_hops):
             next_layer = set()
             for wallet in current_layer:
-                if wallet in visited:
+                if wallet.lower() in visited:
                     continue
-                visited.add(wallet)
+                visited.add(wallet.lower())
                 txs, hit_limit = fetch_transactions(
                     wallet, limit=tx_per_wallet, chainid=chainid,
                     startblock=startblock, endblock=endblock, sort=sort
@@ -432,7 +518,7 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
                 if destination_lower in {w.lower() for w in new_wallets}:
                     found = True
                 time.sleep(0.25)
-            current_layer = next_layer - visited
+            current_layer = {w for w in next_layer if w.lower() not in visited}
             if found:
                 break
     return len(visited), found, limit_hit_wallets
@@ -666,10 +752,20 @@ def contracts():
     }
 
 
+def sanctions_snapshot_info():
+    from logic import SANCTIONS_META, describe_sanctions_snapshot
+    return {
+        "list_publication_date": SANCTIONS_META["list_publication_date"],
+        "fetched_at": SANCTIONS_META["fetched_at"],
+        "count": SANCTIONS_META["count"],
+        "snapshot_label": describe_sanctions_snapshot(),
+    }
+
+
 @app.get("/sanctions/check")
 def sanctions_check(address: str):
-    """Public sanctions screening — looks up a single address against the built-in
-    OFAC-based list. No Etherscan or Neo4j calls."""
+    """Public sanctions screening — looks up a single address against the bundled
+    OFAC SDN snapshot. No Etherscan or Neo4j calls."""
     if not re_module.match(r'^0x[0-9a-fA-F]{40}$', address):
         raise HTTPException(
             status_code=400,
@@ -682,8 +778,10 @@ def sanctions_check(address: str):
         "address": address,
         "sanctioned": match is not None,
         "label": match.get("name") if match else None,
-        "source": "built-in OFAC-based list",
-        "note": "Indicator only; the list may be outdated. Verify with official OFAC sources.",
+        "program": match.get("program") if match else None,
+        "source": "OFAC SDN list snapshot",
+        "note": "Indicator only; the list is a dated snapshot. Verify with official OFAC sources.",
+        **sanctions_snapshot_info(),
     }
 
 
@@ -696,7 +794,12 @@ def list_chains():
 def list_curated_cases():
     return {
         "cases": [
-            {"name": name, "address": info["address"], "chainid": info["chainid"], "description": info["description"]}
+            {
+                "name": name, "address": info["address"], "chainid": info["chainid"],
+                "description": info["description"], "incident_date": info["incident_date"],
+                "from_date": info["from_date"], "to_date": info["to_date"],
+                "sort": info["sort"], "date_note": info["date_note"],
+            }
             for name, info in CURATED_CASES.items()
         ]
     }
@@ -707,16 +810,28 @@ def load_curated_case(case_name: str):
     if case_name not in CURATED_CASES:
         raise HTTPException(status_code=404, detail="Unknown curated case name.")
     info = CURATED_CASES[case_name]
-    visited, limited = expand_from_wallet(info["address"], hops=2, tx_per_wallet=15, chainid=info["chainid"])
+    hops, tx_per_wallet = 2, 15
+    chain = next((n for n, cid in CHAIN_OPTIONS.items() if cid == info["chainid"]), "Ethereum")
+    startblock = date_to_block(info["from_date"], "after", info["chainid"])
+    endblock = date_to_block(info["to_date"], "before", info["chainid"])
+    visited, limited = expand_from_wallet(
+        info["address"], hops=hops, tx_per_wallet=tx_per_wallet, chainid=info["chainid"],
+        startblock=startblock, endblock=endblock, sort=info["sort"]
+    )
+    scope = build_scope(
+        info["from_date"], info["to_date"], info["sort"], tx_per_wallet, hops, chain,
+        case_name=case_name, incident_date=info["incident_date"], date_note=info["date_note"],
+    )
+    remember_trace(scope, limited)
     dw = get_data_window_stats()
-    note = f"Showing 15 of the wallet's transactions" if limited else None
     return {
         "wallets_visited": visited,
         "start_wallet": info["address"],
         "hit_limit": len(limited) > 0,
-        "limit_note": note,
+        "limit_note": cap_note(limited, tx_per_wallet),
         "limited_wallets": limited,
         "data_window": dw["data_window"],
+        "scope": scope,
     }
 
 
@@ -727,22 +842,24 @@ def expand(req: ExpandRequest):
     chainid = _resolve_chainid(req.chain)
     startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
     endblock = date_to_block(req.to_date, "before", chainid) if req.to_date else 99999999
-    sort_order = "asc" if (req.sort and req.sort.lower() in ("asc", "oldest", "oldest first")) else "desc"
+    sort_order = normalize_sort(req.sort)
     visited, limited = expand_from_wallet(
         req.wallet, hops=req.hops, tx_per_wallet=req.tx_per_wallet, chainid=chainid,
         startblock=startblock, endblock=endblock, sort=sort_order
     )
+    scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.hops, req.chain)
+    remember_trace(scope, limited)
     dw = get_data_window_stats()
-    note = f"Showing {req.tx_per_wallet} of the wallet's transactions" if limited else None
     return {
         "wallets_visited": visited,
         "start_wallet": req.wallet,
         "hit_limit": len(limited) > 0,
-        "limit_note": note,
+        "limit_note": cap_note(limited, req.tx_per_wallet),
         "limited_wallets": limited,
         "data_window": dw["data_window"],
         "earliest_timestamp": dw["earliest_timestamp"],
         "latest_timestamp": dw["latest_timestamp"],
+        "scope": scope,
     }
 
 
@@ -751,6 +868,7 @@ def expand(req: ExpandRequest):
 @app.post("/clear")
 def clear():
     clear_graph()
+    forget_trace()
     return {"status": "cleared"}
 
 
@@ -758,12 +876,15 @@ def clear():
 def summary():
     wallets, txs = get_summary_stats()
     dw = get_data_window_stats()
+    trace = current_trace()
     return {
         "wallets_traced": wallets,
         "transactions_mapped": txs,
         "data_window": dw["data_window"],
         "earliest_timestamp": dw["earliest_timestamp"],
         "latest_timestamp": dw["latest_timestamp"],
+        "scope": trace["scope"],
+        "limited_wallets": trace["limited_wallets"],
     }
 
 
@@ -806,7 +927,7 @@ def detections_circular():
 @app.get("/sanctions")
 def sanctions():
     matches = check_sanctions(get_all_wallet_addresses())
-    return {"matches": [{"wallet": addr, **entry} for addr, entry in matches]}
+    return {"matches": [{"wallet": addr, **entry} for addr, entry in matches], **sanctions_snapshot_info()}
 
 
 @app.get("/risk")
@@ -858,18 +979,23 @@ def find_path(req: PathRequest):
     chainid = _resolve_chainid(req.chain)
     startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
     endblock = date_to_block(req.to_date, "before", chainid) if req.to_date else 99999999
-    sort_order = "asc" if (req.sort and req.sort.lower() in ("asc", "oldest", "oldest first")) else "desc"
+    sort_order = normalize_sort(req.sort)
     visited, found, limited = expand_until_found(
         req.source, req.destination, max_hops=req.max_hops,
         tx_per_wallet=req.tx_per_wallet, chainid=chainid,
         startblock=startblock, endblock=endblock, sort=sort_order
     )
-    limit_note = f"Showing {req.tx_per_wallet} of the wallet's transactions" if limited else None
-    if not found:
-        return {"found": False, "wallets_visited": visited, "paths": [], "hit_limit": len(limited) > 0, "limit_note": limit_note}
-
-    paths = get_paths_between(req.source, req.destination, max_hops=req.max_hops)
-    return {"found": len(paths) > 0, "wallets_visited": visited, "paths": paths, "hit_limit": len(limited) > 0, "limit_note": limit_note}
+    scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.max_hops, req.chain)
+    remember_trace(scope, limited)
+    result = {
+        "found": False, "wallets_visited": visited, "paths": [],
+        "hit_limit": len(limited) > 0, "limit_note": cap_note(limited, req.tx_per_wallet),
+        "limited_wallets": limited, "scope": scope,
+    }
+    if found:
+        paths = get_paths_between(req.source, req.destination, max_hops=req.max_hops)
+        result.update(found=len(paths) > 0, paths=paths)
+    return result
 
 
 @app.get("/cases")
@@ -920,6 +1046,8 @@ def save_case(req: SaveCaseRequest):
         "sanctions_matches": sanctioned,
     }
 
+    scope = current_trace()["scope"]
+
     initial_status = "pending" if req.anchor_on_chain else "skipped"
     try:
         local_result = case_manager.save_case(
@@ -928,7 +1056,8 @@ def save_case(req: SaveCaseRequest):
             edges=edges,
             case_number=validated_case_num,
             findings=findings,
-            blockchain_meta={"blockchain_status": initial_status}
+            blockchain_meta={"blockchain_status": initial_status},
+            scope=scope,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -951,6 +1080,7 @@ def save_case(req: SaveCaseRequest):
             edges=edges,
             findings=findings,
             saved_at=local_result["saved_at"],
+            scope=scope,
         )
 
         # 1. Encrypt snapshot before upload (do NOT upload plaintext if encryption fails)
@@ -1025,6 +1155,7 @@ def save_case(req: SaveCaseRequest):
         "explorer_url": explorer_url,
         "case_data_hash": local_result.get("case_data_hash"),
         "encrypted": encrypted,
+        "scope": scope,
     }
     if chain_error:
         response["chain_error"] = chain_error
@@ -1046,6 +1177,7 @@ def retry_anchor_case(case_number: str):
         edges=case_data.get("edges", []),
         findings=case_data.get("findings", {}),
         saved_at=case_data.get("saved_at"),
+        scope=case_data.get("scope"),
     )
 
     cid = case_data.get("cid")
@@ -1135,6 +1267,7 @@ def reanchor_case(case_number: str):
         edges=case_data.get("edges", []),
         findings=case_data.get("findings", {}),
         saved_at=case_data.get("saved_at"),
+        scope=case_data.get("scope"),
     )
 
     canonical_obj = case_manager._canonicalize_numbers(snapshot)
@@ -1204,6 +1337,7 @@ def verify_case_endpoint(case_number: str):
         edges=case_data.get("edges", []),
         findings=case_data.get("findings", {}),
         saved_at=case_data.get("saved_at"),
+        scope=case_data.get("scope"),
     )
     local_hash = local_hash.lower()
 
@@ -1329,6 +1463,8 @@ def load_case(name: str):
         raise HTTPException(status_code=404, detail="Case not found.")
     clear_graph()
     load_case_edges(case_data["edges"])
+    # Cases saved before scopes existed have none; the graph is then described without one.
+    remember_trace(case_data.get("scope"), [])
     return {
         "status": "loaded",
         "name": case_data["name"],
@@ -1338,6 +1474,7 @@ def load_case(name: str):
         "blockchain_status": case_data.get("blockchain_status", "not_anchored"),
         "cid": case_data.get("cid"),
         "tx_hash": case_data.get("tx_hash"),
+        "scope": case_data.get("scope"),
     }
 
 
@@ -1378,6 +1515,10 @@ def issue_certificate(req: CertificateRequest):
         "sanctions_matches": list(sanctioned),
         "risk_summary": [(w, s, sc) for w, s, sc in risk_rows[:10]],
     }
+    # Optional, so payloads issued before scopes existed still hash and verify the same way.
+    scope = current_trace()["scope"]
+    if scope:
+        payload["scope"] = scope
 
     prev_hash, _ = get_last_certificate()
     prev_hash = prev_hash or "GENESIS"
@@ -1405,7 +1546,9 @@ def report(start_wallet: Optional[str] = None):
     wallet = start_wallet or "0x098B716B8Aaf21512996dC57EB0615e2383E2f96"
     output_path = "investigation_report.pdf"
     dw = get_data_window_stats()["data_window"]
-    generate_report(wallet, output_path=output_path, data_window=dw)
+    trace = current_trace()
+    generate_report(wallet, output_path=output_path, data_window=dw,
+                    scope=trace["scope"], limited_wallets=trace["limited_wallets"])
     return FileResponse(output_path, media_type="application/pdf", filename="investigation_report.pdf")
 
 
@@ -1450,6 +1593,10 @@ def publish_report(req: PublishReportRequest):
         "sanctions_matches": list(sanctioned),
         "risk_summary": [(w, s, sc) for w, s, sc in risk_rows[:10]],
     }
+    # Optional, so payloads issued before scopes existed still hash and verify the same way.
+    scope = current_trace()["scope"]
+    if scope:
+        payload["scope"] = scope
 
     prev_hash, _ = get_last_certificate()
     prev_hash = prev_hash or "GENESIS"
@@ -1459,7 +1606,9 @@ def publish_report(req: PublishReportRequest):
     import tempfile
     pdf_path = os.path.join(tempfile.gettempdir(), "blocktrace_publish_report.pdf")
     dw = get_data_window_stats()["data_window"]
-    generate_report(start_wallet, output_path=pdf_path, data_window=dw)
+    trace = current_trace()
+    generate_report(start_wallet, output_path=pdf_path, data_window=dw,
+                    scope=trace["scope"], limited_wallets=trace["limited_wallets"])
 
     with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()

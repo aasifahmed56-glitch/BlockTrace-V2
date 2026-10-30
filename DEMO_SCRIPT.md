@@ -46,7 +46,7 @@ A step-by-step presentation script for showcasing BlockTrace's end-to-end blockc
 >
 > *Traditional investigation workflows struggle because illicit actors launder stolen capital across hundreds of burner addresses, mixers, and bridges. BlockTrace reconstructs raw EVM transaction ledgers into an intuitive forensic intelligence graph.*
 >
-> *By clicking 'Ronin Bridge Hack' under Example Investigations, our backend queries the transaction graph in Neo4j, revealing the exploit address, rapid peeling chains, and subsequent dispersal hops across intermediate accounts."*
+> *By clicking 'Ronin Bridge Hack' under Example Investigations, our backend traces the exploit window itself — 23 March to 30 April 2022, oldest transactions first — and loads it into Neo4j, revealing the exploit address, rapid peeling chains, and subsequent dispersal hops across intermediate accounts. The banner above the graph states exactly that scope, and flags any wallet whose history was cut off by the per-wallet transaction cap, so nobody mistakes a sample for the full history."*
 
 #### Fallback (If Something Fails):
 - *If graph does not load immediately*: Click **Clear** (top right), then click **Ronin Bridge Hack ($600M, 2022)** again under Example Investigations.
@@ -62,7 +62,7 @@ A step-by-step presentation script for showcasing BlockTrace's end-to-end blockc
 #### What to Say:
 > *"Next, we open Findings. BlockTrace executes automated heuristics to identify money laundering behaviors like peeling chains and fan-out dispersal.*
 >
-> *Simultaneously, our engine cross-references all discovered counterparties against a built-in OFAC sanctions database, instantly flagging high-risk wallets associated with designated cybercrime syndicates."*
+> *Simultaneously, our engine cross-references all discovered counterparties against a dated snapshot of the U.S. Treasury OFAC SDN list, instantly flagging high-risk wallets associated with designated cybercrime syndicates."*
 
 ---
 

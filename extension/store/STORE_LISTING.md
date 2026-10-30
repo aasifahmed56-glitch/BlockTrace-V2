@@ -26,7 +26,7 @@ Verify BlockTrace forensic PDF reports on-chain and screen Ethereum addresses ag
    - Provides direct links to Sepolia block explorer and decentralized IPFS gateways.
 
 2. **Sanctions & Known Entity Screening**:
-   - Screen any Ethereum wallet address against the built-in OFAC-based sanctions list.
+   - Screen any Ethereum wallet address against a dated snapshot of the OFAC SDN sanctions list.
    - Right-click any wallet address on any web page (Etherscan, block explorers, news articles) and select **"Check address with BlockTrace"** to inspect it instantly in a lightweight window.
 
 3. **Privacy-Preserving & Zero-Telemetry**:
