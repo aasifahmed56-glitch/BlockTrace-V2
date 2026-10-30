@@ -83,6 +83,59 @@ const DateWindowFields = ({ idPrefix, fromDate, toDate, sortOrder, onFromDate, o
   );
 };
 
+// "N transactions fetched (…)" for the trace toast, from the response's data_quality.
+const describeFetch = (q) => {
+  if (!q || q.transactions_fetched == null) return '';
+  const extras = [];
+  if (q.failed_skipped) extras.push(`${q.failed_skipped} failed skipped`);
+  if (q.internal_included) extras.push(`${q.internal_included} internal`);
+  if (q.zero_value_hidden) extras.push(`${q.zero_value_hidden} 0-ETH hidden`);
+  return `${q.transactions_fetched} transactions fetched, ${q.transactions_shown} shown` +
+    (extras.length ? ` (${extras.join(', ')}).` : '.');
+};
+
+// The same numbers the PDF dossier prints under "Data quality".
+const DataQualityBox = ({ quality, graphTotals }) => {
+  const [open, setOpen] = useState(false);
+  const n = (v) => (v == null ? '—' : v);
+  const items = [
+    ['Fetched', quality.transactions_fetched, 'Transactions taken into the graph by the last trace (normal + internal, after the cap).'],
+    ['Shown', quality.transactions_shown, 'Transactions counted everywhere: successful ETH transfers, 0-ETH calls only if shown.'],
+    ['Failed skipped', quality.failed_skipped, 'Failed transactions (isError = 1) left out of the graph.'],
+    ['0-ETH hidden', quality.zero_value_hidden, '0-ETH contract calls stored but hidden. Turn on "Show 0-ETH contract calls" to include them.'],
+    ['Internal', quality.internal_shown, 'Internal ETH transfers (sent by contracts) included.'],
+    ['Capped wallets', quality.capped_wallets, 'Wallets with more transactions than the per-wallet cap.'],
+  ];
+  return (
+    <div className="flex-none bg-surface border-b border-outline-variant/60 px-4 py-1.5 text-xs z-10">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-on-surface-variant hover:text-on-surface"
+      >
+        <span className="material-symbols-outlined text-[16px] text-primary">fact_check</span>
+        <span className="font-label-caps uppercase text-[10px] font-bold">Data quality</span>
+        <span className="font-mono text-[11px]">
+          {n(quality.transactions_shown)} shown of {n(quality.transactions_fetched)} fetched
+          {graphTotals.total > graphTotals.returned && ` · showing ${graphTotals.returned} of ${graphTotals.total} in the graph`}
+        </span>
+        <span className="material-symbols-outlined text-[14px]">{open ? 'expand_less' : 'expand_more'}</span>
+      </button>
+      {open && (
+        <dl className="mt-1.5 grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+          {items.map(([label, value, help]) => (
+            <div key={label} className="bg-surface-container rounded px-2 py-1" title={help}>
+              <dt className="text-[9px] font-label-caps uppercase text-on-surface-variant font-bold">{label}</dt>
+              <dd className="font-mono text-[12px] font-semibold text-on-surface">{n(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+};
+
 export const InvestigateScreen = () => {
   const {
     chains,
@@ -103,6 +156,10 @@ export const InvestigateScreen = () => {
     setActionLoading,
     traceScope,
     limitedWallets,
+    dataQuality,
+    graphTotals,
+    showZeroValue,
+    setShowZeroValue,
   } = useInvestigation();
 
   // Filter input state
@@ -173,7 +230,7 @@ export const InvestigateScreen = () => {
       resetPathView();
       await refreshGraphAndSummary();
       await refreshFindings(data.start_wallet);
-      showToast(`Loaded ${caseName} (${data.wallets_visited} wallets visited)`, 'success');
+      showToast(`Loaded ${caseName}: ${data.wallets_visited} wallets visited. ${describeFetch(data.data_quality)}`, 'success');
     } catch (err) {
       console.error(err);
       showToast(getErrorMessage(err), 'error');
@@ -207,7 +264,7 @@ export const InvestigateScreen = () => {
       resetPathView();
       await refreshGraphAndSummary();
       await refreshFindings(data.start_wallet);
-      showToast(`Trace complete! ${data.wallets_visited} wallets visited.`, 'success');
+      showToast(`Trace complete: ${data.wallets_visited} wallets visited. ${describeFetch(data.data_quality)}`, 'success');
     } catch (err) {
       console.error(err);
       showToast(getErrorMessage(err), 'error');
@@ -257,9 +314,10 @@ export const InvestigateScreen = () => {
         const relsMap = new Map();
         data.paths.forEach((p) => {
           p.rels.forEach((r) => {
-            const key = `${r.from.toLowerCase()}-${r.to.toLowerCase()}-${r.value}`;
+            // Keyed on the transaction, so two transfers of the same amount stay two
+            const key = r.hash || `${r.from.toLowerCase()}-${r.to.toLowerCase()}-${r.value}`;
             if (!relsMap.has(key)) {
-              relsMap.set(key, { from: r.from, to: r.to, value: r.value });
+              relsMap.set(key, { from: r.from, to: r.to, value: r.value, hash: r.hash, timestamp: r.timestamp, kind: r.kind });
             }
           });
         });
@@ -358,6 +416,19 @@ export const InvestigateScreen = () => {
               {summary.wallets_traced > 0 ? 'Live Trace Active' : 'Session Ready'}
             </span>
           </div>
+
+          {/* Show 0-ETH contract calls */}
+          <label className="flex items-center gap-1.5 text-[11px] font-label-caps uppercase text-on-surface-variant cursor-pointer select-none">
+            <input
+              id="show-zero-value"
+              type="checkbox"
+              checked={showZeroValue}
+              onChange={(e) => setShowZeroValue(e.target.checked)}
+              disabled={actionLoading}
+              className="accent-primary"
+            />
+            <span>Show 0-ETH contract calls</span>
+          </label>
 
           {/* Export Graph */}
           <button
@@ -700,6 +771,9 @@ export const InvestigateScreen = () => {
                 </div>
               )}
             </div>
+          )}
+          {edges.length > 0 && dataQuality && (
+            <DataQualityBox quality={dataQuality} graphTotals={graphTotals} />
           )}
           <div className="flex-1 relative min-h-0">
             <GraphCanvas filterQuery={filterQuery} onSelectWallet={handleSelectWallet} />

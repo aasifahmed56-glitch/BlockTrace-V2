@@ -2,7 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import {
   fetchChains,
   fetchCuratedCases,
-  fetchGraphData,
+  fetchGraphWithTotals,
+  setShowZeroValue as setClientShowZeroValue,
   fetchSummary,
   fetchSanctionsWithSnapshot,
   fetchRiskOverview,
@@ -36,6 +37,11 @@ export const InvestigationProvider = ({ children }) => {
   // What the last trace covered (dates, order, cap) and which wallets hit the cap
   const [traceScope, setTraceScope] = useState(null);
   const [limitedWallets, setLimitedWallets] = useState([]);
+  // Data quality of the last trace and of the graph as shown (see /summary)
+  const [dataQuality, setDataQuality] = useState(null);
+  const [graphTotals, setGraphTotals] = useState({ total: 0, returned: 0 });
+  // "Show 0-ETH contract calls" — off by default; changes what every count includes
+  const [showZeroValue, setShowZeroValueState] = useState(false);
   
   // Path finding isolation state
   const [activePathEdges, setActivePathEdges] = useState(null);
@@ -133,11 +139,14 @@ export const InvestigationProvider = ({ children }) => {
   const refreshGraphAndSummary = useCallback(async () => {
     setIsLoadingGraph(true);
     try {
-      const [graphEdges, summaryStats] = await Promise.all([
-        fetchGraphData(),
+      const [graph, summaryStats] = await Promise.all([
+        fetchGraphWithTotals(),
         fetchSummary(),
       ]);
+      const graphEdges = graph.edges;
       setEdges(graphEdges || []);
+      setGraphTotals({ total: graph.totalEdges, returned: graph.returnedEdges });
+      setDataQuality(summaryStats?.data_quality || null);
       setSummary(summaryStats || { wallets_traced: 0, transactions_mapped: 0 });
       setTraceScope(summaryStats?.scope || null);
       setLimitedWallets(summaryStats?.limited_wallets || []);
@@ -225,6 +234,14 @@ export const InvestigationProvider = ({ children }) => {
     }
   }, [activeTab, refreshFindings]);
 
+  // Toggle 0-ETH calls: the header goes on every request, then everything reloads
+  const setShowZeroValue = useCallback(async (on) => {
+    setClientShowZeroValue(on);
+    setShowZeroValueState(!!on);
+    const graphEdges = await refreshGraphAndSummary();
+    await refreshFindings(startWallet || (graphEdges && graphEdges[0] ? graphEdges[0].from : undefined));
+  }, [refreshGraphAndSummary, refreshFindings, startWallet]);
+
   // Reset path filter
   const resetPathView = () => {
     setActivePathEdges(null);
@@ -250,6 +267,10 @@ export const InvestigationProvider = ({ children }) => {
     sanctionsSnapshot,
     traceScope,
     limitedWallets,
+    dataQuality,
+    graphTotals,
+    showZeroValue,
+    setShowZeroValue,
     riskData,
     narrativeParagraphs,
     hubDetections,

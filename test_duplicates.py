@@ -61,6 +61,8 @@ def _fake_get(url, params=None, timeout=None):
     resp = MagicMock()
     if params.get("module") == "block":
         resp.json.return_value = {"status": "1", "result": "14400000"}
+    elif params.get("action") == "txlistinternal":
+        resp.json.return_value = {"status": "0", "message": "No transactions found", "result": []}
     else:
         resp.json.return_value = {"status": "1", "result": _fake_txlist(params["address"])}
     return resp

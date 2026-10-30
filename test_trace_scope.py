@@ -93,6 +93,10 @@ def client(monkeypatch):
         "first_date": None, "last_date": None,
     })
     monkeypatch.setattr(api, "get_summary_stats", lambda: (3, 2))
+    monkeypatch.setattr(api, "get_graph_quality", lambda: {
+        "edges_stored": 2, "transactions_shown": 2, "zero_value_edges": 0, "zero_value_hidden": 0,
+        "internal_shown": 0, "failed_included": 0, "show_zero_value": False,
+    })
     c = TestClient(api.app)
     c.blocks = blocks
     return c
@@ -101,7 +105,7 @@ def client(monkeypatch):
 def test_expand_returns_and_remembers_scope(client, monkeypatch):
     calls = {}
 
-    def fake_expand(start, hops, tx_per_wallet, chainid, startblock, endblock, sort):
+    def fake_expand(start, hops, tx_per_wallet, chainid, startblock, endblock, sort, **kwargs):
         calls.update(startblock=startblock, endblock=endblock, sort=sort, tx=tx_per_wallet)
         return 4, ["0xaaa", "0xbbb"]
 
@@ -127,7 +131,7 @@ def test_expand_returns_and_remembers_scope(client, monkeypatch):
 def test_expand_without_dates_keeps_old_behaviour(client, monkeypatch):
     calls = {}
 
-    def fake_expand(start, hops, tx_per_wallet, chainid, startblock, endblock, sort):
+    def fake_expand(start, hops, tx_per_wallet, chainid, startblock, endblock, sort, **kwargs):
         calls.update(startblock=startblock, endblock=endblock, sort=sort)
         return 1, []
 
@@ -147,7 +151,7 @@ def test_expand_rejects_bad_date_with_422(client):
 def test_path_returns_scope_and_uses_its_tx_cap(client, monkeypatch):
     seen = {}
 
-    def fake_until_found(source, destination, max_hops, tx_per_wallet, chainid, startblock, endblock, sort):
+    def fake_until_found(source, destination, max_hops, tx_per_wallet, chainid, startblock, endblock, sort, **kwargs):
         seen.update(tx=tx_per_wallet, sort=sort, startblock=startblock)
         return 5, False, ["0xccc"]
 
@@ -177,7 +181,7 @@ def test_curated_cases_list_incident_windows(client):
 def test_curated_load_traces_incident_window(client, monkeypatch):
     calls = {}
 
-    def fake_expand(start, hops, tx_per_wallet, chainid, startblock, endblock, sort):
+    def fake_expand(start, hops, tx_per_wallet, chainid, startblock, endblock, sort, **kwargs):
         calls.update(start=start, startblock=startblock, endblock=endblock, sort=sort, tx=tx_per_wallet)
         return 7, ["0xddd"]
 
@@ -207,13 +211,13 @@ def test_expand_visits_each_wallet_once_regardless_of_case(monkeypatch):
 
     fetched = []
 
-    def fake_fetch(wallet, limit, chainid, startblock, endblock, sort):
+    def fake_fetch(wallet, **kwargs):
         fetched.append(wallet)
         return [], True
 
     monkeypatch.setattr(api, "neo4j_session", lambda: contextlib.nullcontext())
-    monkeypatch.setattr(api, "fetch_transactions", fake_fetch)
-    monkeypatch.setattr(api, "load_transactions", lambda session, txs: {WALLET.lower(), "0x" + "2" * 40})
+    monkeypatch.setattr(api, "fetch_wallet_activity", fake_fetch)
+    monkeypatch.setattr(api, "load_transactions", lambda session, txs, stats=None: {WALLET.lower(), "0x" + "2" * 40})
     monkeypatch.setattr(api.time, "sleep", lambda s: None)
 
     visited, limited = api.expand_from_wallet(WALLET, hops=2)

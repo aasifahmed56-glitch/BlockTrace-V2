@@ -2,6 +2,16 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import * as d3 from 'd3';
 import { useInvestigation } from '../context/InvestigationContext';
 
+const EXPLORERS = {
+  Ethereum: 'https://etherscan.io',
+  'BNB Smart Chain': 'https://bscscan.com',
+  Polygon: 'https://polygonscan.com',
+};
+
+const formatEth = (v) => `${v >= 1 ? v.toFixed(2) : v > 0 ? v.toFixed(4) : '0'} ETH`;
+const formatDate = (ts) => (ts ? new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—');
+const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-4)}` : '');
+
 export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
   const {
     edges,
@@ -12,6 +22,7 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     limitedWallets,
     traceScope,
   } = useInvestigation();
+  const explorer = EXPLORERS[traceScope?.chain] || EXPLORERS.Ethereum;
 
   const svgRef = useRef(null);
   const containerRef = useRef(null);
@@ -46,56 +57,69 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     );
   }, [rawEdges, filterQuery, entityLabels]);
 
-  // Derive unique nodes from filtered edges
+  // Nodes and links from the filtered edges. Each wallet keeps what it sent and
+  // received separately (never summed), its transactions and first/last seen. Several
+  // transactions between the same pair become one link labelled "N txs · total", whose
+  // tooltip lists them, so the line and the wallet panel always agree.
   const { nodes, links } = useMemo(() => {
     const nodeMap = new Map();
+    const linkMap = new Map();
+
+    const nodeFor = (address) => {
+      const key = address.toLowerCase();
+      if (!nodeMap.has(key)) {
+        nodeMap.set(key, {
+          id: key,
+          address,
+          isSanctioned: sanctionedSet.has(key),
+          isCapped: cappedSet.has(key),
+          label: entityLabels[key] || null,
+          inDegree: 0,
+          outDegree: 0,
+          sentTotal: 0,
+          receivedTotal: 0,
+          firstSeen: null,
+          lastSeen: null,
+          txs: [],
+        });
+      }
+      return nodeMap.get(key);
+    };
 
     filteredEdges.forEach((e) => {
-      if (!nodeMap.has(e.from)) {
-        const fromLower = e.from.toLowerCase();
-        nodeMap.set(e.from, {
-          id: e.from,
-          address: e.from,
-          isSanctioned: sanctionedSet.has(fromLower),
-          isCapped: cappedSet.has(fromLower),
-          label: entityLabels[fromLower] || null,
-          inDegree: 0,
-          outDegree: 0,
-          totalValue: 0,
-        });
-      }
-      if (!nodeMap.has(e.to)) {
-        const toLower = e.to.toLowerCase();
-        nodeMap.set(e.to, {
-          id: e.to,
-          address: e.to,
-          isSanctioned: sanctionedSet.has(toLower),
-          isCapped: cappedSet.has(toLower),
-          label: entityLabels[toLower] || null,
-          inDegree: 0,
-          outDegree: 0,
-          totalValue: 0,
-        });
-      }
+      const value = Number(e.value || 0);
+      const from = nodeFor(e.from);
+      const to = nodeFor(e.to);
+      const tx = { hash: e.hash || null, timestamp: e.timestamp || null, value, kind: e.kind || 'normal', failed: !!e.failed };
 
-      const fromNode = nodeMap.get(e.from);
-      const toNode = nodeMap.get(e.to);
-      fromNode.outDegree += 1;
-      toNode.inDegree += 1;
-      fromNode.totalValue += Number(e.value || 0);
-      toNode.totalValue += Number(e.value || 0);
+      from.outDegree += 1;
+      from.sentTotal += value;
+      from.txs.push({ ...tx, direction: 'out', counterparty: e.to });
+      to.inDegree += 1;
+      to.receivedTotal += value;
+      to.txs.push({ ...tx, direction: 'in', counterparty: e.from });
+      [from, to].forEach((n) => {
+        if (tx.timestamp) {
+          n.firstSeen = n.firstSeen === null ? tx.timestamp : Math.min(n.firstSeen, tx.timestamp);
+          n.lastSeen = n.lastSeen === null ? tx.timestamp : Math.max(n.lastSeen, tx.timestamp);
+        }
+      });
+
+      const pairKey = `${from.id}->${to.id}`;
+      if (!linkMap.has(pairKey)) {
+        linkMap.set(pairKey, { id: pairKey, source: from.id, target: to.id, value: 0, count: 0, txs: [] });
+      }
+      const link = linkMap.get(pairKey);
+      link.value += value;
+      link.count += 1;
+      link.txs.push(tx);
     });
 
-    const linksArray = filteredEdges.map((e, index) => ({
-      id: `${e.from}-${e.to}-${index}`,
-      source: e.from,
-      target: e.to,
-      value: Number(e.value || 0),
-    }));
+    nodeMap.forEach((n) => n.txs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)));
 
     return {
       nodes: Array.from(nodeMap.values()),
-      links: linksArray,
+      links: Array.from(linkMap.values()),
     };
   }, [filteredEdges, sanctionedSet, cappedSet, entityLabels]);
 
@@ -197,6 +221,13 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
         return sanctionedSet.has(tgt.address?.toLowerCase()) ? 'url(#arrowhead-sanctioned)' : 'url(#arrowhead)';
       });
 
+    // Hover list of the transactions behind each line
+    link.append('title').text((d) =>
+      d.txs
+        .map((t) => `${formatDate(t.timestamp)}  ${formatEth(t.value)}${t.kind === 'internal' ? ' (internal)' : ''}${t.hash ? `  ${shortHash(t.hash)}` : ''}`)
+        .join('\n')
+    );
+
     // Render Link Value Labels (visible on higher zoom)
     const linkText = g
       .append('g')
@@ -209,7 +240,7 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
       .attr('font-size', '9px')
       .attr('fill', '#eed5cb')
       .attr('text-anchor', 'middle')
-      .text((d) => (d.value > 0 ? `${d.value >= 1 ? d.value.toFixed(2) : d.value.toFixed(4)} ETH` : ''));
+      .text((d) => (d.count > 1 ? `${d.count} txs · ${formatEth(d.value)}` : formatEth(d.value)));
 
     // Render Node Groups
     const node = g
@@ -483,26 +514,13 @@ ${capText}` : d.address));
               <span>{capText}</span>
             </p>
           )}
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="bg-surface-container p-2 rounded">
-              <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Connections</span>
-              <span className="font-address-md font-bold text-on-surface">
-                {hoveredNode.inDegree + hoveredNode.outDegree} txs
-              </span>
-            </div>
-            <div className="bg-surface-container p-2 rounded">
-              <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Volume</span>
-              <span className="font-address-md font-bold text-primary">
-                {hoveredNode.totalValue.toFixed(2)} ETH
-              </span>
-            </div>
-          </div>
+          <WalletStats node={hoveredNode} />
         </div>
       )}
 
       {/* Selected Node Details Drawer */}
       {selectedNode && !hoveredNode && (
-        <div className="absolute top-6 right-6 bg-surface border border-outline-variant rounded-xl p-4 shadow-2xl z-30 max-w-sm">
+        <div className="absolute top-6 right-6 bg-surface border border-outline-variant rounded-xl p-4 shadow-2xl z-30 w-[22rem] max-w-[calc(100%-3rem)]">
           <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-outline-variant">
             <div className="flex items-center gap-1.5">
               <span className="material-symbols-outlined text-primary text-[18px]">account_balance_wallet</span>
@@ -517,9 +535,46 @@ ${capText}` : d.address));
               <span className="material-symbols-outlined text-[16px]">close</span>
             </button>
           </div>
-          <p className="font-address-md text-xs text-on-surface break-all mb-4 bg-surface-container p-2 rounded border border-outline-variant select-all">
+          <p className="font-address-md text-xs text-on-surface break-all mb-3 bg-surface-container p-2 rounded border border-outline-variant select-all">
             {selectedNode.address}
           </p>
+          <WalletStats node={selectedNode} />
+          <div className="mt-3 mb-3">
+            <h4 className="font-label-caps text-[10px] uppercase text-on-surface-variant font-bold mb-1.5">
+              Transactions in this graph ({selectedNode.txs.length})
+            </h4>
+            <ul className="max-h-48 overflow-y-auto flex flex-col divide-y divide-outline-variant/40 border border-outline-variant/50 rounded">
+              {selectedNode.txs.map((t, idx) => (
+                <li key={`${t.hash}-${t.direction}-${idx}`} className="flex items-center gap-2 px-2 py-1.5 text-[11px]">
+                  <span
+                    className={`material-symbols-outlined text-[14px] ${t.direction === 'out' ? 'text-error' : 'text-[#4C8C4A]'}`}
+                    title={t.direction === 'out' ? 'Sent' : 'Received'}
+                    aria-label={t.direction === 'out' ? 'Sent' : 'Received'}
+                  >
+                    {t.direction === 'out' ? 'call_made' : 'call_received'}
+                  </span>
+                  <span className="text-on-surface-variant font-mono whitespace-nowrap">{formatDate(t.timestamp)}</span>
+                  <span className="flex-1 text-right font-mono font-semibold text-on-surface whitespace-nowrap">
+                    {t.direction === 'out' ? '−' : '+'}{formatEth(t.value)}
+                    {t.kind === 'internal' && <span className="ml-1 text-[9px] text-on-surface-variant">INT</span>}
+                  </span>
+                  {t.hash ? (
+                    <a
+                      href={`${explorer}/tx/${t.hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-primary hover:underline whitespace-nowrap"
+                      title={t.hash}
+                    >
+                      {shortHash(t.hash)}
+                    </a>
+                  ) : (
+                    <span className="text-on-surface-variant">—</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
@@ -531,7 +586,7 @@ ${capText}` : d.address));
               Copy Address
             </button>
             <a
-              href={`https://etherscan.io/address/${selectedNode.address}`}
+              href={`${explorer}/address/${selectedNode.address}`}
               target="_blank"
               rel="noopener noreferrer"
               className="py-1.5 px-3 bg-primary text-white font-label-caps text-[11px] uppercase rounded hover:bg-primary-container transition-colors flex items-center justify-center gap-1"
@@ -545,3 +600,27 @@ ${capText}` : d.address));
     </div>
   );
 };
+
+// Sent and received are shown separately: adding them would double-count money that
+// merely passed through the wallet.
+const WalletStats = ({ node }) => (
+  <div className="grid grid-cols-2 gap-2 text-xs">
+    <div className="bg-surface-container p-2 rounded">
+      <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Sent</span>
+      <span className="font-address-md font-bold text-on-surface">{formatEth(node.sentTotal)}</span>
+    </div>
+    <div className="bg-surface-container p-2 rounded">
+      <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Received</span>
+      <span className="font-address-md font-bold text-on-surface">{formatEth(node.receivedTotal)}</span>
+    </div>
+    <div className="bg-surface-container p-2 rounded">
+      <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Transactions</span>
+      <span className="font-address-md font-bold text-primary">{node.txs.length}</span>
+    </div>
+    <div className="bg-surface-container p-2 rounded">
+      <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">First / last seen</span>
+      <span className="font-address-md text-[10px] text-on-surface block">{formatDate(node.firstSeen)}</span>
+      <span className="font-address-md text-[10px] text-on-surface block">{formatDate(node.lastSeen)}</span>
+    </div>
+  </div>
+);

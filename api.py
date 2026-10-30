@@ -42,6 +42,8 @@ from logic import (
 )
 import case_manager
 import workspace
+import view_options
+import graph_queries
 from case_manager import (
     DuplicateCaseNumberError, InvalidCaseNumberError, validate_case_number,
     generate_case_number, build_case_snapshot, update_case_blockchain_meta
@@ -181,22 +183,37 @@ def build_scope(from_date=None, to_date=None, sort="desc", tx_per_wallet=15, hop
     return scope
 
 
-def remember_trace(scope, limited_wallets):
+def remember_trace(scope, limited_wallets, quality=None):
     with _LAST_TRACE_LOCK:
         _LAST_TRACE[workspace.current()] = {
             "scope": scope,
             "limited_wallets": list(limited_wallets or []),
+            "quality": quality,
         }
 
 
 def current_trace():
     with _LAST_TRACE_LOCK:
-        return _LAST_TRACE.get(workspace.current(), {"scope": None, "limited_wallets": []})
+        return _LAST_TRACE.get(workspace.current(), {"scope": None, "limited_wallets": [], "quality": None})
 
 
 def forget_trace():
     with _LAST_TRACE_LOCK:
         _LAST_TRACE.pop(workspace.current(), None)
+
+
+def data_quality_report():
+    """The "Data quality" numbers: what the last trace fetched and skipped, and what the
+    counting rule shows or hides in the graph right now."""
+    trace = current_trace()
+    report = {
+        "transactions_fetched": None, "failed_skipped": None,
+        "internal_included": None, "zero_value_fetched": None,
+    }
+    report.update(trace.get("quality") or {})
+    report.update(get_graph_quality())
+    report["capped_wallets"] = len(trace.get("limited_wallets") or [])
+    return report
 
 
 def cap_note(limited_wallets, tx_per_wallet):
@@ -217,6 +234,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(workspace.WorkspaceMiddleware)
+app.add_middleware(view_options.ViewOptionsMiddleware)
 
 
 @app.on_event("startup")
@@ -315,6 +333,10 @@ class TraceWindow(BaseModel):
     from_date: Optional[str] = None
     to_date: Optional[str] = None
     sort: Optional[str] = "desc"
+    # Failed transactions (isError = 1) moved no funds, so they stay out of the graph
+    # unless asked for. Internal ETH transfers (sent by contracts) are fetched by default.
+    include_failed: bool = False
+    include_internal: bool = True
 
     @field_validator("from_date", "to_date")
     @classmethod
@@ -421,26 +443,141 @@ def date_to_block(date_input, closest="after", chainid=1):
     except Exception:
         return default_block
 
-def fetch_transactions(wallet_address, limit=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
+def day_bounds(from_date=None, to_date=None):
+    """Unix timestamps for a YYYY-MM-DD window, inclusive of both whole UTC days:
+    from_date 00:00:00 to to_date 23:59:59. None for an open end."""
+    start = end = None
+    if from_date:
+        start = int(datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    if to_date:
+        end = int(datetime.strptime(to_date, "%Y-%m-%d").replace(
+            hour=23, minute=59, second=59, tzinfo=timezone.utc).timestamp())
+    return start, end
+
+
+class TraceStats:
+    """What one trace fetched, counted as distinct transactions across all wallets
+    (the same transaction seen from both ends counts once).
+
+    fetched          — transactions taken into the graph (normal + internal, after
+                       the per-wallet cap), whatever their value
+    failed_skipped   — failed transactions (isError = 1) passed over while filling a
+                       wallet's cap; not stored unless include_failed
+    internal_included— internal ETH transfers taken into the graph
+    zero_value       — fetched transactions that moved 0 ETH (hidden by default)
+    """
+
+    def __init__(self):
+        self.fetched = set()
+        self.failed = set()
+        self.internal = set()
+        self.zero_value = set()
+
+    def as_dict(self):
+        return {
+            "transactions_fetched": len(self.fetched),
+            "failed_skipped": len(self.failed),
+            "internal_included": len(self.internal),
+            "zero_value_fetched": len(self.zero_value),
+        }
+
+
+def _etherscan_list(action, wallet_address, chainid, startblock, endblock, sort):
     params = {
-        "chainid": chainid, "module": "account", "action": "txlist",
+        "chainid": chainid, "module": "account", "action": action,
         "address": wallet_address, "startblock": startblock, "endblock": endblock,
         "sort": sort, "apikey": ETHERSCAN_API_KEY
     }
-    response = requests.get(ETHERSCAN_URL, params=params)
-    data = response.json()
-    if data.get("status") != "1":
-        return [], False
-    raw_txs = data.get("result", [])
-    hit_limit = len(raw_txs) > limit
-    return raw_txs[:limit], hit_limit
+    data = requests.get(ETHERSCAN_URL, params=params).json()
+    if data.get("status") != "1" or not isinstance(data.get("result"), list):
+        return []
+    return data["result"]
 
 
-def load_transactions(session, transactions):
+def _take(raw_txs, limit, kind, include_failed, ts_from, ts_to, stats):
+    """Walks Etherscan rows in their sort order and keeps up to `limit` usable ones.
+
+    Rows are normalised to {from, to, value, hash, edge_key, timeStamp, kind, failed}.
+    Skipped: duplicates (same edge key), rows outside the UTC day window (a guard in
+    case the block lookup fell back to the full range), and failed transactions unless
+    include_failed. Contract creations have an empty "to"; the created contract's
+    address is used instead. Returns (rows, hit_limit)."""
+    kept, seen = [], set()
+    for tx in raw_txs:
+        tx_hash = tx.get("hash") or ""
+        if kind == "internal":
+            edge_key = f"{tx_hash}:internal:{tx.get('traceId') or '0'}"
+        else:
+            edge_key = tx_hash
+        if not tx_hash or edge_key in seen:
+            continue
+        seen.add(edge_key)
+        try:
+            ts = int(tx.get("timeStamp") or 0)
+        except ValueError:
+            ts = 0
+        if (ts_from is not None and ts < ts_from) or (ts_to is not None and ts > ts_to):
+            continue
+        failed = str(tx.get("isError", "0")) == "1" or str(tx.get("txreceipt_status", "")) == "0"
+        if failed and not include_failed:
+            if stats is not None:
+                stats.failed.add(edge_key)
+            continue
+        if len(kept) == limit:
+            return kept, True
+        kept.append({
+            "from": tx.get("from") or "",
+            "to": tx.get("to") or tx.get("contractAddress") or "",
+            "value": tx.get("value"),
+            "hash": tx_hash,
+            "edge_key": edge_key,
+            "timeStamp": tx.get("timeStamp"),
+            "kind": kind,
+            "failed": failed,
+        })
+    return kept, False
+
+
+def fetch_transactions(wallet_address, limit=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
+                       include_failed=False, ts_from=None, ts_to=None, stats=None):
+    """Normal transactions of a wallet (Etherscan txlist), at most `limit` of them.
+    Returns (rows, hit_limit); hit_limit means more usable transactions exist."""
+    raw = _etherscan_list("txlist", wallet_address, chainid, startblock, endblock, sort)
+    return _take(raw, limit, "normal", include_failed, ts_from, ts_to, stats)
+
+
+def fetch_internal_transactions(wallet_address, limit=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
+                                include_failed=False, ts_from=None, ts_to=None, stats=None):
+    """Internal ETH transfers (sent by contracts) of a wallet (Etherscan txlistinternal),
+    under the same cap as normal transactions."""
+    raw = _etherscan_list("txlistinternal", wallet_address, chainid, startblock, endblock, sort)
+    return _take(raw, limit, "internal", include_failed, ts_from, ts_to, stats)
+
+
+def fetch_wallet_activity(wallet_address, limit=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
+                          include_failed=False, include_internal=True, ts_from=None, ts_to=None, stats=None):
+    """Normal plus (optionally) internal transfers of one wallet, each list capped at `limit`.
+
+    Cost: one Etherscan call per visited wallet, two with internal transfers, each
+    followed by a 0.25 s pause to stay under the free tier's 5 calls/second."""
+    window = dict(limit=limit, chainid=chainid, startblock=startblock, endblock=endblock, sort=sort,
+                  include_failed=include_failed, ts_from=ts_from, ts_to=ts_to, stats=stats)
+    rows, hit_limit = fetch_transactions(wallet_address, **window)
+    if include_internal:
+        time.sleep(0.25)
+        internal_rows, internal_hit = fetch_internal_transactions(wallet_address, **window)
+        rows += internal_rows
+        hit_limit = hit_limit or internal_hit
+    return rows, hit_limit
+
+
+def load_transactions(session, transactions, stats=None):
     """Writes transactions as Wallet nodes and SENT edges in the current workspace.
 
     Addresses are stored lowercase: MERGE matches case-sensitively, so a checksummed
-    and a lowercase spelling of one address would otherwise become two nodes."""
+    and a lowercase spelling of one address would otherwise become two nodes. Edges are
+    keyed on edge_key (the tx hash, or hash + trace id for internal transfers) and keep
+    the plain tx hash, kind, failed flag and a zero_value flag for 0-ETH calls."""
     new_wallets = set()
     for tx in transactions:
         from_addr, to_addr = (tx.get("from") or "").lower(), (tx.get("to") or "").lower()
@@ -455,22 +592,32 @@ def load_transactions(session, transactions):
         if value_eth < 0 or value_eth > 1_000_000:
             continue
 
+        edge_key = tx.get("edge_key") or tx["hash"]
         session.run(
             """
             MERGE (a:Wallet {address: $from_addr, ws: $ws})
             MERGE (b:Wallet {address: $to_addr, ws: $ws})
-            MERGE (a)-[t:SENT {hash: $tx_hash}]->(b)
-            SET t.value = $value_eth, t.timestamp = $timestamp
+            MERGE (a)-[t:SENT {hash: $edge_key}]->(b)
+            SET t.value = $value_eth, t.timestamp = $timestamp, t.tx_hash = $tx_hash,
+                t.kind = $kind, t.failed = $failed, t.zero_value = $zero_value
             """,
-            ws=workspace.current(), from_addr=from_addr, to_addr=to_addr, tx_hash=tx["hash"],
-            value_eth=value_eth, timestamp=tx["timeStamp"]
+            ws=workspace.current(), from_addr=from_addr, to_addr=to_addr, edge_key=edge_key,
+            tx_hash=tx["hash"], value_eth=value_eth, timestamp=tx.get("timeStamp"),
+            kind=tx.get("kind", "normal"), failed=bool(tx.get("failed")), zero_value=value_eth == 0
         )
+        if stats is not None:
+            stats.fetched.add(edge_key)
+            if tx.get("kind") == "internal":
+                stats.internal.add(edge_key)
+            if value_eth == 0:
+                stats.zero_value.add(edge_key)
         new_wallets.add(from_addr)
         new_wallets.add(to_addr)
     return new_wallets
 
 
-def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
+def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
+                       include_failed=False, include_internal=True, ts_from=None, ts_to=None, stats=None):
     visited = set()
     current_layer = {start_wallet.lower()}
     limit_hit_wallets = []
@@ -481,20 +628,23 @@ def expand_from_wallet(start_wallet, hops=2, tx_per_wallet=15, chainid=1, startb
                 if wallet.lower() in visited:
                     continue
                 visited.add(wallet.lower())
-                txs, hit_limit = fetch_transactions(
+                txs, hit_limit = fetch_wallet_activity(
                     wallet, limit=tx_per_wallet, chainid=chainid,
-                    startblock=startblock, endblock=endblock, sort=sort
+                    startblock=startblock, endblock=endblock, sort=sort,
+                    include_failed=include_failed, include_internal=include_internal,
+                    ts_from=ts_from, ts_to=ts_to, stats=stats,
                 )
                 if hit_limit:
                     limit_hit_wallets.append(wallet)
-                new_wallets = load_transactions(session, txs)
+                new_wallets = load_transactions(session, txs, stats=stats)
                 next_layer.update(new_wallets)
                 time.sleep(0.25)
             current_layer = {w for w in next_layer if w.lower() not in visited}
     return len(visited), limit_hit_wallets
 
 
-def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc"):
+def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chainid=1, startblock=0, endblock=99999999, sort="desc",
+                       include_failed=False, include_internal=True, ts_from=None, ts_to=None, stats=None):
     destination_lower = destination.lower()
     existing = {a.lower() for a in get_all_wallet_addresses()}
     if destination_lower in existing:
@@ -511,13 +661,15 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
                 if wallet.lower() in visited:
                     continue
                 visited.add(wallet.lower())
-                txs, hit_limit = fetch_transactions(
+                txs, hit_limit = fetch_wallet_activity(
                     wallet, limit=tx_per_wallet, chainid=chainid,
-                    startblock=startblock, endblock=endblock, sort=sort
+                    startblock=startblock, endblock=endblock, sort=sort,
+                    include_failed=include_failed, include_internal=include_internal,
+                    ts_from=ts_from, ts_to=ts_to, stats=stats,
                 )
                 if hit_limit:
                     limit_hit_wallets.append(wallet)
-                new_wallets = load_transactions(session, txs)
+                new_wallets = load_transactions(session, txs, stats=stats)
                 next_layer.update(new_wallets)
                 if destination_lower in {w.lower() for w in new_wallets}:
                     found = True
@@ -528,135 +680,66 @@ def expand_until_found(source, destination, max_hops=6, tx_per_wallet=15, chaini
     return len(visited), found, limit_hit_wallets
 
 
-def get_graph_data(limit=300):
+# The read queries live in graph_queries.py, shared with the PDF dossier, so the
+# graph, summary, Findings and PDF all apply the same counting rule.
+
+def get_graph_data(limit=None, show_zero=True):
+    """(from, to, value) for every stored edge — what a saved case keeps. Saved cases
+    keep 0-ETH calls too; the counting rule hides them again when a case is reopened."""
     with neo4j_session() as session:
-        result = session.run(
-            "MATCH (a:Wallet {ws: $ws})-[r:SENT]->(b:Wallet) RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value LIMIT $limit",
-            ws=workspace.current(), limit=limit
-        )
-        return [(r["from_addr"], r["to_addr"], r["value"]) for r in result]
+        edges, _ = graph_queries.graph_edges(session, limit=limit or 1_000_000, show_zero=show_zero)
+        return [(e["from"], e["to"], e["value"]) for e in edges]
+
+
+def get_graph_edges(limit=5000):
+    """Counted edges with hash, timestamp and kind, plus the total before `limit`."""
+    with neo4j_session() as session:
+        return graph_queries.graph_edges(session, limit=limit)
 
 
 def get_summary_stats():
     with neo4j_session() as session:
-        result = session.run(
-            "MATCH (w:Wallet {ws: $ws}) OPTIONAL MATCH (w)-[r:SENT]->() RETURN count(DISTINCT w) AS wallets, count(r) AS txs",
-            ws=workspace.current()
-        )
-        record = result.single()
-        return record["wallets"], record["txs"]
+        return graph_queries.summary_stats(session)
+
+
+def get_graph_quality():
+    with neo4j_session() as session:
+        return graph_queries.data_quality(session)
 
 
 def get_data_window_stats():
     with neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (:Wallet {ws: $ws})-[r:SENT]->()
-            WHERE r.timestamp IS NOT NULL
-            WITH toInteger(r.timestamp) AS ts
-            WHERE ts IS NOT NULL AND ts > 0
-            RETURN min(ts) AS min_ts, max(ts) AS max_ts
-            """, ws=workspace.current()
-        )
-        record = result.single()
-        if record and record["min_ts"] is not None and record["max_ts"] is not None:
-            first_date = datetime.fromtimestamp(record["min_ts"], timezone.utc).strftime("%Y-%m-%d")
-            last_date = datetime.fromtimestamp(record["max_ts"], timezone.utc).strftime("%Y-%m-%d")
-            return {
-                "data_window": f"Data window: {first_date} to {last_date} (UTC)",
-                "earliest_timestamp": record["min_ts"],
-                "latest_timestamp": record["max_ts"],
-                "first_date": first_date,
-                "last_date": last_date,
-            }
-        return {
-            "data_window": None,
-            "earliest_timestamp": None,
-            "latest_timestamp": None,
-            "first_date": None,
-            "last_date": None,
-        }
+        return graph_queries.data_window(session)
 
 
 def get_hub_wallets(limit=1000):
     with neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (w:Wallet {ws: $ws})-[r:SENT]-()
-            RETURN w.address AS wallet, count(r) AS total_txs
-            ORDER BY total_txs DESC LIMIT $limit
-            """, ws=workspace.current(), limit=limit
-        )
-        return [(r["wallet"], r["total_txs"]) for r in result]
+        return graph_queries.hub_wallets(session, limit=limit)
 
 
 def get_fanout_wallets(min_recipients=4, limit=1000):
     with neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (a:Wallet {ws: $ws})-[:SENT]->(b:Wallet)
-            WITH a, count(DISTINCT b) AS distinct_recipients
-            WHERE distinct_recipients >= $min_recipients
-            RETURN a.address AS wallet, distinct_recipients
-            ORDER BY distinct_recipients DESC LIMIT $limit
-            """, ws=workspace.current(), min_recipients=min_recipients, limit=limit
-        )
-        return [(r["wallet"], r["distinct_recipients"]) for r in result]
+        return graph_queries.fanout_wallets(session, min_recipients=min_recipients, limit=limit)
 
 
 def get_peel_chains(limit=1000):
     with neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (mid:Wallet {ws: $ws})-[r2:SENT]->(next1:Wallet)
-            MATCH (mid)-[r3:SENT]->(next2:Wallet)
-            WHERE elementId(next1) < elementId(next2) AND r2.value > 0.001 AND r3.value > 0.001
-            WITH mid,
-                 CASE WHEN r2.value > r3.value THEN r2.value ELSE r3.value END AS bigger,
-                 CASE WHEN r2.value > r3.value THEN r3.value ELSE r2.value END AS smaller
-            WHERE (smaller / bigger) < 0.15
-            WITH mid, bigger, smaller
-            ORDER BY bigger DESC
-            WITH mid, collect({main: bigger, peel: smaller})[0] AS top_match
-            RETURN mid.address AS wallet, top_match.main AS main_amount, top_match.peel AS peel_amount
-            ORDER BY main_amount DESC
-            LIMIT $limit
-            """, ws=workspace.current(), limit=limit
-        )
-        return [(r["wallet"], r["main_amount"], r["peel_amount"]) for r in result]
+        return graph_queries.peel_chains(session, limit=limit)
 
 
 def get_round_number_transactions(min_value=1.0, limit=1000):
     with neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (a:Wallet {ws: $ws})-[r:SENT]->(b:Wallet)
-            WHERE r.value >= $min_value AND r.value = toInteger(r.value)
-            RETURN a.address AS from_addr, b.address AS to_addr, r.value AS value
-            ORDER BY r.value DESC
-            LIMIT $limit
-            """, ws=workspace.current(), min_value=min_value, limit=limit
-        )
-        return [(r["from_addr"], r["to_addr"], r["value"]) for r in result]
+        return graph_queries.round_number_transactions(session, min_value=min_value, limit=limit)
 
 
 def get_circular_flows(max_hops=4, limit=1000):
     with neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH path = (a:Wallet {ws: $ws})-[:SENT*2..%d]->(a)
-            RETURN DISTINCT a.address AS wallet, length(path) AS hops
-            ORDER BY hops ASC
-            LIMIT $limit
-            """ % max_hops, ws=workspace.current(), limit=limit
-        )
-        return [(r["wallet"], r["hops"]) for r in result]
+        return graph_queries.circular_flows(session, max_hops=max_hops, limit=limit)
 
 
 def get_all_wallet_addresses():
     with neo4j_session() as session:
-        result = session.run("MATCH (w:Wallet {ws: $ws}) RETURN w.address AS address", ws=workspace.current())
-        return [r["address"] for r in result]
+        return graph_queries.all_wallet_addresses(session)
 
 
 def clear_graph():
@@ -675,7 +758,7 @@ def load_case_edges(edges):
                 MERGE (a:Wallet {address: $from_addr, ws: $ws})
                 MERGE (b:Wallet {address: $to_addr, ws: $ws})
                 MERGE (a)-[t:SENT {hash: $tx_hash}]->(b)
-                SET t.value = $value_eth
+                SET t.value = $value_eth, t.kind = 'normal', t.zero_value = $value_eth = 0
                 """,
                 ws=workspace.current(), from_addr=e["from"].lower(), to_addr=e["to"].lower(),
                 tx_hash=synthetic_hash, value_eth=e["value"]
@@ -683,19 +766,24 @@ def load_case_edges(edges):
 
 
 def get_paths_between(source, destination, max_hops=6, limit=10):
+    """Routes from source to destination over counted edges only (see graph_queries),
+    so a path never runs through a transfer the graph hides."""
     with neo4j_session() as session:
         result = session.run(
-            """
-            MATCH (a:Wallet {ws: $ws}), (b:Wallet {ws: $ws})
+            f"""
+            MATCH (a:Wallet {{ws: $ws}}), (b:Wallet {{ws: $ws}})
             WHERE toLower(a.address) = toLower($source) AND toLower(b.address) = toLower($destination)
-            MATCH p = (a)-[:SENT*1..%d]->(b)
+            MATCH p = (a)-[:SENT*1..{int(max_hops)}]->(b)
+            WHERE all(r IN relationships(p) WHERE {graph_queries.counted()})
             RETURN [n IN nodes(p) | n.address] AS wallets,
-                   [r IN relationships(p) | {from: startNode(r).address, to: endNode(r).address, value: r.value}] AS rels,
+                   [r IN relationships(p) | {{from: startNode(r).address, to: endNode(r).address, value: r.value,
+                                              hash: coalesce(r.tx_hash, r.hash), timestamp: toInteger(r.timestamp),
+                                              kind: coalesce(r.kind, 'normal')}}] AS rels,
                    length(p) AS hops
             ORDER BY hops ASC
             LIMIT $limit
-            """ % max_hops,
-            ws=workspace.current(), source=source, destination=destination, limit=limit
+            """,
+            **graph_queries._params(source=source, destination=destination, limit=limit)
         )
         return [{"wallets": r["wallets"], "rels": r["rels"], "hops": r["hops"]} for r in result]
 
@@ -819,17 +907,21 @@ def load_curated_case(case_name: str):
     chain = next((n for n, cid in CHAIN_OPTIONS.items() if cid == info["chainid"]), "Ethereum")
     startblock = date_to_block(info["from_date"], "after", info["chainid"])
     endblock = date_to_block(info["to_date"], "before", info["chainid"])
+    stats = TraceStats()
+    ts_from, ts_to = day_bounds(info["from_date"], info["to_date"])
     visited, limited = expand_from_wallet(
         info["address"], hops=hops, tx_per_wallet=tx_per_wallet, chainid=info["chainid"],
-        startblock=startblock, endblock=endblock, sort=info["sort"]
+        startblock=startblock, endblock=endblock, sort=info["sort"],
+        ts_from=ts_from, ts_to=ts_to, stats=stats,
     )
     scope = build_scope(
         info["from_date"], info["to_date"], info["sort"], tx_per_wallet, hops, chain,
         case_name=case_name, incident_date=info["incident_date"], date_note=info["date_note"],
     )
-    remember_trace(scope, limited)
+    remember_trace(scope, limited, stats.as_dict())
     dw = get_data_window_stats()
     return {
+        "data_quality": data_quality_report(),
         "wallets_visited": visited,
         "start_wallet": info["address"],
         "hit_limit": len(limited) > 0,
@@ -848,14 +940,19 @@ def expand(req: ExpandRequest):
     startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
     endblock = date_to_block(req.to_date, "before", chainid) if req.to_date else 99999999
     sort_order = normalize_sort(req.sort)
+    stats = TraceStats()
+    ts_from, ts_to = day_bounds(req.from_date, req.to_date)
     visited, limited = expand_from_wallet(
         req.wallet, hops=req.hops, tx_per_wallet=req.tx_per_wallet, chainid=chainid,
-        startblock=startblock, endblock=endblock, sort=sort_order
+        startblock=startblock, endblock=endblock, sort=sort_order,
+        include_failed=req.include_failed, include_internal=req.include_internal,
+        ts_from=ts_from, ts_to=ts_to, stats=stats,
     )
     scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.hops, req.chain)
-    remember_trace(scope, limited)
+    remember_trace(scope, limited, stats.as_dict())
     dw = get_data_window_stats()
     return {
+        "data_quality": data_quality_report(),
         "wallets_visited": visited,
         "start_wallet": req.wallet,
         "hit_limit": len(limited) > 0,
@@ -883,6 +980,7 @@ def summary():
     dw = get_data_window_stats()
     trace = current_trace()
     return {
+        "data_quality": data_quality_report(),
         "wallets_traced": wallets,
         "transactions_mapped": txs,
         "data_window": dw["data_window"],
@@ -900,8 +998,10 @@ def data_window_endpoint():
 
 @app.get("/graph")
 def graph():
-    edges = get_graph_data()
-    return {"edges": [{"from": f, "to": t, "value": v} for f, t, v in edges]}
+    """Counted edges (see graph_queries), oldest first. total_edges is the count before
+    the safety limit, so the UI can say "showing N of M" if it ever applies."""
+    edges, total = get_graph_edges()
+    return {"edges": edges, "total_edges": total, "returned_edges": len(edges)}
 
 
 @app.get("/detections/hub")
@@ -985,14 +1085,19 @@ def find_path(req: PathRequest):
     startblock = date_to_block(req.from_date, "after", chainid) if req.from_date else 0
     endblock = date_to_block(req.to_date, "before", chainid) if req.to_date else 99999999
     sort_order = normalize_sort(req.sort)
+    stats = TraceStats()
+    ts_from, ts_to = day_bounds(req.from_date, req.to_date)
     visited, found, limited = expand_until_found(
         req.source, req.destination, max_hops=req.max_hops,
         tx_per_wallet=req.tx_per_wallet, chainid=chainid,
-        startblock=startblock, endblock=endblock, sort=sort_order
+        startblock=startblock, endblock=endblock, sort=sort_order,
+        include_failed=req.include_failed, include_internal=req.include_internal,
+        ts_from=ts_from, ts_to=ts_to, stats=stats,
     )
     scope = build_scope(req.from_date, req.to_date, sort_order, req.tx_per_wallet, req.max_hops, req.chain)
-    remember_trace(scope, limited)
+    remember_trace(scope, limited, stats.as_dict())
     result = {
+        "data_quality": data_quality_report(),
         "found": False, "wallets_visited": visited, "paths": [],
         "hit_limit": len(limited) > 0, "limit_note": cap_note(limited, req.tx_per_wallet),
         "limited_wallets": limited, "scope": scope,
@@ -1552,8 +1657,9 @@ def report(start_wallet: Optional[str] = None):
     output_path = "investigation_report.pdf"
     dw = get_data_window_stats()["data_window"]
     trace = current_trace()
+    quality = data_quality_report()
     generate_report(wallet, output_path=output_path, data_window=dw,
-                    scope=trace["scope"], limited_wallets=trace["limited_wallets"])
+                    scope=trace["scope"], limited_wallets=trace["limited_wallets"], data_quality=quality)
     return FileResponse(output_path, media_type="application/pdf", filename="investigation_report.pdf")
 
 
@@ -1612,8 +1718,9 @@ def publish_report(req: PublishReportRequest):
     pdf_path = os.path.join(tempfile.gettempdir(), "blocktrace_publish_report.pdf")
     dw = get_data_window_stats()["data_window"]
     trace = current_trace()
+    quality = data_quality_report()
     generate_report(start_wallet, output_path=pdf_path, data_window=dw,
-                    scope=trace["scope"], limited_wallets=trace["limited_wallets"])
+                    scope=trace["scope"], limited_wallets=trace["limited_wallets"], data_quality=quality)
 
     with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()

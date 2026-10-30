@@ -37,8 +37,16 @@ const api = axios.create({
   },
 });
 
+// "Show 0-ETH contract calls": the backend counts and lists 0-ETH transactions only
+// when this is on, for the graph, summary, Findings and PDF alike.
+let showZeroValue = false;
+export const setShowZeroValue = (on) => {
+  showZeroValue = !!on;
+};
+
 api.interceptors.request.use((config) => {
   config.headers['X-Workspace-Id'] = getWorkspaceId();
+  if (showZeroValue) config.headers['X-Show-Zero-Value'] = '1';
   return config;
 });
 
@@ -128,6 +136,17 @@ export const findPath = async ({ source, destination, max_hops = 4, tx_per_walle
 export const fetchGraphData = async () => {
   const { data } = await api.get('/graph');
   return data.edges || [];
+};
+
+// Edges plus total_edges / returned_edges, for "Showing N of M transactions".
+export const fetchGraphWithTotals = async () => {
+  const { data } = await api.get('/graph');
+  const edges = data.edges || [];
+  return {
+    edges,
+    totalEdges: data.total_edges ?? edges.length,
+    returnedEdges: data.returned_edges ?? edges.length,
+  };
 };
 
 export const fetchSummary = async () => {
@@ -263,6 +282,7 @@ export const getReportUrl = (startWallet) => {
   // workspace goes in the query string instead of a header.
   const params = new URLSearchParams({ ws: getWorkspaceId() });
   if (startWallet) params.set('start_wallet', startWallet);
+  if (showZeroValue) params.set('show_zero', '1');
   return `${API_BASE_URL}/report?${params}`;
 };
 
