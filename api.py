@@ -500,6 +500,8 @@ class TraceStats:
         return {
             "transactions_fetched": len(self.fetched),
             "failed_skipped": len(self.failed),
+            "failed_skipped_normal": sum(1 for k in self.failed if ":internal:" not in k),
+            "failed_skipped_internal": sum(1 for k in self.failed if ":internal:" in k),
             "internal_included": len(self.internal),
             "zero_value_fetched": len(self.zero_value),
         }

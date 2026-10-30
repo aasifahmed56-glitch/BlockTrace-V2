@@ -21,6 +21,15 @@ export const describeScope = (scope, { maxHops = false } = {}) => {
   return parts.join(' · ');
 };
 
+// "Failed skipped N", split by kind when internal transfers failed too.
+// Mirrors describe_failed_skipped() in logic.py.
+export const describeFailedSkipped = (q) => {
+  const internal = q.failed_skipped_internal || 0;
+  if (!internal) return `Failed skipped ${q.failed_skipped}`;
+  const normal = q.failed_skipped_normal ?? q.failed_skipped - internal;
+  return `Failed skipped ${normal} (normal) / ${internal} (internal)`;
+};
+
 // The Data quality line. Mirrors describe_data_quality() in logic.py (PDF dossier).
 export const describeDataQuality = (q) => {
   if (!q) return null;
@@ -32,7 +41,7 @@ export const describeDataQuality = (q) => {
   if (q.internal_counted) parts.push(`Internal ${internal}`);
   else if (internal) parts.push(`Internal off (${internal} stored, not counted)`);
   else parts.push('Internal off');
-  if (q.failed_skipped != null) parts.push(`Failed skipped ${q.failed_skipped}`);
+  if (q.failed_skipped != null) parts.push(describeFailedSkipped(q));
   if (q.capped_wallets) parts.push(`Capped wallets ${q.capped_wallets}`);
   return parts.join(' · ');
 };

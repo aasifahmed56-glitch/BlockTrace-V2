@@ -117,6 +117,18 @@ def describe_scope(scope):
     return " · ".join(parts)
 
 
+def describe_failed_skipped(quality):
+    """"Failed skipped N", split as "N (normal) / M (internal)" when internal ones were
+    skipped too, so the total does not jump unexplained when internal transfers are on."""
+    internal = quality.get("failed_skipped_internal") or 0
+    if not internal:
+        return f"Failed skipped {quality['failed_skipped']}"
+    normal = quality.get("failed_skipped_normal")
+    if normal is None:
+        normal = quality["failed_skipped"] - internal
+    return f"Failed skipped {normal} (normal) / {internal} (internal)"
+
+
 def describe_data_quality(quality):
     """The "Data quality" line, e.g. "Normal 7 (3 with ETH, 4 zero-value hidden) · Internal off
     · Failed skipped 1". Mirrored by describeDataQuality() in the frontend."""
@@ -141,7 +153,7 @@ def describe_data_quality(quality):
         parts.append("Internal off")
 
     if quality.get("failed_skipped") is not None:
-        parts.append(f"Failed skipped {quality['failed_skipped']}")
+        parts.append(describe_failed_skipped(quality))
     if quality.get("capped_wallets"):
         parts.append(f"Capped wallets {quality['capped_wallets']}")
     return " · ".join(parts)

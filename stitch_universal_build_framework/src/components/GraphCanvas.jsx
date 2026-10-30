@@ -8,7 +8,13 @@ const EXPLORERS = {
   Polygon: 'https://polygonscan.com',
 };
 
-const formatEth = (v) => `${v >= 1 ? v.toFixed(2) : v > 0 ? v.toFixed(4) : '0'} ETH`;
+// 2 decimals from 1 ETH, 4 below; dust under 0.0001 reads "<0.0001", never "0.0000".
+const formatEth = (v) => {
+  if (v >= 1) return `${v.toFixed(2)} ETH`;
+  if (v >= 0.0001) return `${v.toFixed(4)} ETH`;
+  if (v > 0) return '<0.0001 ETH';
+  return '0 ETH';
+};
 const formatDate = (ts) => (ts ? new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—');
 const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-4)}` : '');
 
@@ -228,19 +234,44 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
         .join('\n')
     );
 
-    // Render Link Value Labels (visible on higher zoom)
-    const linkText = g
-      .append('g')
-      .attr('class', 'link-labels')
-      .selectAll('text')
+    // Link value labels: a small pill beside each line's midpoint. Drawn above the nodes
+    // (raised after they are added) and hidden on lines too short to fit them, so a
+    // label never sits on a wallet or its address.
+    const linkLabelLayer = g.append('g').attr('class', 'link-labels').style('pointer-events', 'none');
+    const linkText = linkLabelLayer
+      .selectAll('g')
       .data(links)
       .enter()
+      .append('g');
+    linkText
+      .append('rect')
+      .attr('rx', 6)
+      .attr('ry', 6)
+      .attr('fill', '#1b1c1c')
+      .attr('fill-opacity', 0.85)
+      .attr('stroke', 'rgba(255, 109, 31, 0.35)')
+      .attr('stroke-width', 0.75);
+    linkText
       .append('text')
       .attr('font-family', 'JetBrains Mono')
       .attr('font-size', '9px')
       .attr('fill', '#eed5cb')
       .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'central')
       .text((d) => (d.count > 1 ? `${d.count} txs · ${formatEth(d.value)}` : formatEth(d.value)));
+    // Size each pill to its text (approximate if the browser cannot measure yet)
+    linkText.each(function (d) {
+      const text = d3.select(this).select('text');
+      let width = text.node().getComputedTextLength?.() || 0;
+      if (!width) width = text.text().length * 5.4;
+      d.labelWidth = width + 10;
+      d3.select(this)
+        .select('rect')
+        .attr('x', -d.labelWidth / 2)
+        .attr('y', -7)
+        .attr('width', d.labelWidth)
+        .attr('height', 14);
+    });
 
     // Render Node Groups
     const node = g
@@ -338,7 +369,14 @@ ${capText}` : d.address));
       .attr('paint-order', 'stroke')
       .attr('stroke', '#3c2d27')
       .attr('stroke-width', 3)
-      .text((d) => (d.label ? `${d.label} (${truncate(d.address)})` : truncate(d.address)));
+      .text((d) => (d.label ? `${d.label} (${truncate(d.address)})` : truncate(d.address)))
+      .each(function (d) {
+        // Remember each wallet's footprint (circle + address label) for edge-label collisions
+        d.radius = nodeRadius(d);
+        d.textWidth = this.getComputedTextLength?.() || this.textContent.length * 6;
+      });
+
+    linkLabelLayer.raise();
 
     // Interactions
     node
@@ -373,9 +411,28 @@ ${capText}` : d.address));
         .attr('x2', (d) => d.target.x)
         .attr('y2', (d) => d.target.y);
 
-      linkText
-        .attr('x', (d) => (d.source.x + d.target.x) / 2)
-        .attr('y', (d) => (d.source.y + d.target.y) / 2 - 4);
+      // Each wallet's circle and address label as boxes, for the edge-label checks below
+      const boxes = [];
+      nodes.forEach((n) => {
+        const r = n.radius || 14;
+        const w = (n.textWidth || 60) / 2 + 3;
+        boxes.push([n.x - r, n.y - r, n.x + r, n.y + r]);
+        boxes.push([n.x - w, n.y + r + 3, n.x + w, n.y + r + 21]);
+      });
+      linkText.each(function (d) {
+        const dx = d.target.x - d.source.x;
+        const dy = d.target.y - d.source.y;
+        const len = Math.hypot(dx, dy) || 1;
+        // Shift perpendicular to the line so the pill sits beside it, not on it
+        const cx = (d.source.x + d.target.x) / 2 + (-dy / len) * 9;
+        const cy = (d.source.y + d.target.y) / 2 + (dx / len) * 9;
+        const half = d.labelWidth / 2;
+        // Hide the pill wherever it would cover a wallet or its address
+        const blocked = boxes.some(([x1, y1, x2, y2]) => cx - half < x2 && cx + half > x1 && cy - 8 < y2 && cy + 8 > y1);
+        d3.select(this)
+          .attr('transform', `translate(${cx},${cy})`)
+          .attr('display', blocked ? 'none' : null);
+      });
 
       node.attr('transform', (d) => `translate(${d.x},${d.y})`);
     });

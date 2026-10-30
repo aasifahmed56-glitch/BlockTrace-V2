@@ -194,3 +194,19 @@ def test_old_saved_case_counts_internal_transfers(client, tmp_path, monkeypatch)
         stored["findings"], stored["saved_at"], scope=stored.get("scope"),
     )
     assert rehash == saved["case_data_hash"]
+
+
+def test_failed_skipped_is_split_when_internal_ones_failed():
+    from logic import describe_failed_skipped
+    assert describe_failed_skipped({"failed_skipped": 2}) == "Failed skipped 2"
+    assert describe_failed_skipped({"failed_skipped": 3, "failed_skipped_normal": 1,
+                                    "failed_skipped_internal": 2}) == "Failed skipped 1 (normal) / 2 (internal)"
+    # Without the per-kind normal count, it is derived from the total
+    assert describe_failed_skipped({"failed_skipped": 3, "failed_skipped_internal": 1}) == "Failed skipped 2 (normal) / 1 (internal)"
+
+
+def test_trace_stats_split_failed_by_kind():
+    stats = api.TraceStats()
+    stats.failed.update({"0xa", "0xb", "0xc:internal:0_1"})
+    d = stats.as_dict()
+    assert (d["failed_skipped"], d["failed_skipped_normal"], d["failed_skipped_internal"]) == (3, 2, 1)

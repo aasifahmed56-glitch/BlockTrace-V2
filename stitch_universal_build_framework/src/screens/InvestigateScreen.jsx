@@ -9,7 +9,7 @@ import {
   clearGraph,
   getErrorMessage,
 } from '../api/client';
-import { describeScope, describeCap, describeDataQuality } from '../utils/scope';
+import { describeScope, describeCap, describeDataQuality, describeFailedSkipped } from '../utils/scope';
 
 const INTERNAL_HELP =
   "Internal transfers are ETH moved by smart contracts (Etherscan's Internal Transactions tab). Turn on for bridges, mixers and exchanges.";
@@ -86,6 +86,8 @@ const DateWindowFields = ({ idPrefix, fromDate, toDate, sortOrder, onFromDate, o
   );
 };
 
+const walletsVisited = (n) => `${n} ${n === 1 ? 'wallet' : 'wallets'} visited`;
+
 // Trace toast: the counted total, then the same breakdown as the Data quality box.
 const describeFetch = (q) => {
   if (!q || q.transactions_shown == null) return '';
@@ -99,7 +101,11 @@ const DataQualityBox = ({ quality, graphTotals }) => {
   const items = [
     ['Fetched', quality.transactions_fetched, 'Transactions taken into the graph by the last trace (normal + internal, after the cap).'],
     ['Shown', quality.transactions_shown, 'Transactions counted everywhere: successful ETH transfers, 0-ETH calls only if shown.'],
-    ['Failed skipped', quality.failed_skipped, 'Failed transactions (isError = 1) left out of the graph.'],
+    [
+      'Failed skipped',
+      quality.failed_skipped == null ? null : describeFailedSkipped(quality).replace('Failed skipped ', ''),
+      'Failed transactions (isError = 1) left out of the graph, split into normal and internal when both occur.',
+    ],
     ['0-ETH hidden', quality.zero_value_hidden, '0-ETH contract calls stored but hidden. Turn on "Show 0-ETH contract calls" to include them.'],
     ['Internal', quality.internal_counted ? quality.internal_shown : 'off', 'Internal ETH transfers (sent by contracts); counted only when the trace included them.'],
     ['Capped wallets', quality.capped_wallets, 'Wallets with more transactions than the per-wallet cap.'],
@@ -234,7 +240,7 @@ export const InvestigateScreen = () => {
       resetPathView();
       await refreshGraphAndSummary();
       await refreshFindings(data.start_wallet);
-      showToast(`Loaded ${caseName}: ${data.wallets_visited} wallets visited. ${describeFetch(data.data_quality)}`, 'success');
+      showToast(`Loaded ${caseName}: ${walletsVisited(data.wallets_visited)}. ${describeFetch(data.data_quality)}`, 'success');
     } catch (err) {
       console.error(err);
       showToast(getErrorMessage(err), 'error');
@@ -269,7 +275,7 @@ export const InvestigateScreen = () => {
       resetPathView();
       await refreshGraphAndSummary();
       await refreshFindings(data.start_wallet);
-      showToast(`Trace complete: ${data.wallets_visited} wallets visited. ${describeFetch(data.data_quality)}`, 'success');
+      showToast(`Trace complete: ${walletsVisited(data.wallets_visited)}. ${describeFetch(data.data_quality)}`, 'success');
     } catch (err) {
       console.error(err);
       showToast(getErrorMessage(err), 'error');
