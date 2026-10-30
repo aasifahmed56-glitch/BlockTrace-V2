@@ -1,6 +1,7 @@
 // Describes what a trace covered. Mirrors describe_scope() in logic.py, which
-// writes the same line into the PDF dossier.
-export const describeScope = (scope) => {
+// writes the same line into the PDF dossier. For a path search, hops is the most
+// the search was allowed to go, so pass { maxHops: true } to say "max N hops".
+export const describeScope = (scope, { maxHops = false } = {}) => {
   if (!scope) return null;
   const cap = scope.tx_per_wallet;
   const oldestFirst = scope.sort === 'asc';
@@ -12,7 +13,7 @@ export const describeScope = (scope) => {
   } else {
     parts.push(`All dates (${oldestFirst ? 'oldest' : 'newest'} ${cap} per wallet)`);
   }
-  if (scope.hops) parts.push(`${scope.hops} hops`);
+  if (scope.hops) parts.push(`${maxHops ? 'max ' : ''}${scope.hops} hops`);
   if (scope.chain) parts.push(scope.chain);
   if (scope.incident_date) parts.push(`incident ${scope.incident_date}`);
   return parts.join(' · ');

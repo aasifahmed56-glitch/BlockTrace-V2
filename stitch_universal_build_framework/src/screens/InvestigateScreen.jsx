@@ -127,6 +127,10 @@ export const InvestigateScreen = () => {
   const [pathFromDate, setPathFromDate] = useState('');
   const [pathToDate, setPathToDate] = useState('');
   const [pathSortOrder, setPathSortOrder] = useState('desc');
+  // Path search fetches more per wallet by default: a low cap is the usual reason a path is missed
+  const [pathTxPerWallet, setPathTxPerWallet] = useState(30);
+  // Scope returned by the last path search, so the banner can tell it apart from a wallet trace
+  const [pathScopeKey, setPathScopeKey] = useState(null);
   const pathRangeInvalid = Boolean(pathFromDate && pathToDate && pathFromDate > pathToDate);
 
   const [showCapped, setShowCapped] = useState(false);
@@ -146,7 +150,8 @@ export const InvestigateScreen = () => {
     if (traceScope.chain && chains.includes(traceScope.chain)) setSelectedChain(traceScope.chain);
   }, [traceScope, chains]);
 
-  const scopeLine = describeScope(traceScope);
+  const isPathScope = Boolean(traceScope && pathScopeKey === JSON.stringify(traceScope));
+  const scopeLine = describeScope(traceScope, { maxHops: isPathScope });
   const capWarning = describeCap(limitedWallets, traceScope?.tx_per_wallet ?? txPerWallet);
 
   // Path Finder Form
@@ -229,14 +234,17 @@ export const InvestigateScreen = () => {
         source: pathSource.trim(),
         destination: pathDestination.trim(),
         max_hops: Number(maxHops),
-        tx_per_wallet: Number(txPerWallet),
+        tx_per_wallet: Number(pathTxPerWallet),
         chain: selectedChain,
         from_date: pathFromDate || undefined,
         to_date: pathToDate || undefined,
         sort: pathSortOrder,
       });
       // The path search's own window shouldn't be copied into the wallet-trace form.
-      if (data.scope) appliedScopeKey.current = JSON.stringify(data.scope);
+      if (data.scope) {
+        appliedScopeKey.current = JSON.stringify(data.scope);
+        setPathScopeKey(JSON.stringify(data.scope));
+      }
 
       if (!data.found || !data.paths || data.paths.length === 0) {
         setActivePathEdges(null);
@@ -579,19 +587,43 @@ export const InvestigateScreen = () => {
                 </div>
               </div>
 
-              <div>
-                <div className="flex justify-between text-[10px] font-label-caps uppercase text-on-surface-variant font-bold mb-1">
-                  <span>Max Hops Search</span>
-                  <span className="text-primary font-mono">{maxHops}</span>
+              <div className="flex flex-col gap-2 bg-surface-container-low p-2.5 rounded-lg border border-outline-variant/40">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="flex justify-between text-[10px] font-label-caps uppercase text-on-surface-variant font-bold mb-1">
+                      <label htmlFor="path-max-hops">Max hops (1–6)</label>
+                      <span className="text-primary font-mono">{maxHops}</span>
+                    </div>
+                    <input
+                      id="path-max-hops"
+                      type="range"
+                      min="1"
+                      max="6"
+                      value={maxHops}
+                      onChange={(e) => setMaxHops(Number(e.target.value))}
+                      className="w-full accent-primary h-1 bg-outline-variant rounded-lg cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-[10px] font-label-caps uppercase text-on-surface-variant font-bold mb-1">
+                      <label htmlFor="path-tx-per-wallet">Tx per wallet</label>
+                      <span className="text-primary font-mono">{pathTxPerWallet}</span>
+                    </div>
+                    <input
+                      id="path-tx-per-wallet"
+                      type="range"
+                      min="5"
+                      max="30"
+                      step="5"
+                      value={pathTxPerWallet}
+                      onChange={(e) => setPathTxPerWallet(Number(e.target.value))}
+                      className="w-full accent-primary h-1 bg-outline-variant rounded-lg cursor-pointer"
+                    />
+                  </div>
                 </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="6"
-                  value={maxHops}
-                  onChange={(e) => setMaxHops(Number(e.target.value))}
-                  className="w-full accent-primary h-1 bg-outline-variant rounded-lg cursor-pointer"
-                />
+                <p className="text-[10px] text-on-surface-variant leading-snug">
+                  Hops = how many wallet-to-wallet steps outward the search may go. Tx per wallet = the most transactions fetched for each wallet visited; raise it if a path is missing.
+                </p>
               </div>
 
               <DateWindowFields
@@ -603,10 +635,6 @@ export const InvestigateScreen = () => {
                 onToDate={setPathToDate}
                 onSortOrder={setPathSortOrder}
               />
-
-              <p className="text-[10px] text-on-surface-variant leading-snug">
-                Uses the Tx / Wallet cap set above ({txPerWallet} per wallet).
-              </p>
 
               <button
                 type="submit"
@@ -627,7 +655,9 @@ export const InvestigateScreen = () => {
               <div className="flex items-start gap-2 text-xs text-on-surface">
                 <span className="material-symbols-outlined text-[16px] text-primary">date_range</span>
                 <span className="font-medium">
-                  <span className="font-label-caps uppercase text-[10px] text-on-surface-variant font-bold mr-1.5">Scope</span>
+                  <span className="font-label-caps uppercase text-[10px] text-on-surface-variant font-bold mr-1.5">
+                    {isPathScope ? 'Path search scope' : 'Scope'}
+                  </span>
                   {scopeLine || 'Not recorded for this graph (traced before scopes were saved).'}
                 </span>
               </div>
