@@ -3,7 +3,7 @@
 $ErrorActionPreference = "Stop"
 $Desktop = $PSScriptRoot
 $Root = Split-Path $Desktop -Parent
-$Frontend = Join-Path $Root "stitch_universal_build_framework"
+$Frontend = Join-Path $Root "Frontend"
 
 # 1. Frontend, with API calls routed through the app's local /api proxy
 Push-Location $Frontend

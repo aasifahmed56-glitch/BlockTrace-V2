@@ -3,14 +3,15 @@
   "configurations": [
     {
       "name": "backend",
-      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeExecutable": "../venv/Scripts/python.exe",
       "runtimeArgs": ["-m", "uvicorn", "api:app", "--host", "127.0.0.1", "--port", "8000"],
+      "cwd": "Backend",
       "port": 8000
     },
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "stitch_universal_build_framework", "run", "dev"],
+      "runtimeArgs": ["--prefix", "Frontend", "run", "dev"],
       "port": 5173
     }
   ]

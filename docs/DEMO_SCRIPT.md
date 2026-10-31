@@ -6,8 +6,8 @@ A step-by-step presentation script for showcasing BlockTrace's end-to-end blockc
 
 ## Pre-Demo Checklist (Complete 10 Minutes Before Presentation)
 
-- [ ] **Backend Running**: FastAPI backend active on `http://127.0.0.1:8000` (`.\venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000`).
-- [ ] **Frontend Running**: Vite dev server active on `http://localhost:5173` (`npm run dev` in `stitch_universal_build_framework`).
+- [ ] **Backend Running**: FastAPI backend active on `http://127.0.0.1:8000` (from `Backend`: `..\venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000`).
+- [ ] **Frontend Running**: Vite dev server active on `http://localhost:5173` (`npm run dev` in `Frontend`).
 - [ ] **Wallet Funded**: Submitter wallet in `.env` has at least 0.05 Sepolia testnet ETH.
 - [ ] **Database Active**: Neo4j Aura database connected and responsive.
 - [ ] **Workspace Cleared**: Click **Clear** (top right) so the workspace is empty before loading a case; saved cases and reports include everything currently in the workspace.

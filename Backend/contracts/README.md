@@ -94,7 +94,7 @@ Request 0.1–0.5 Sepolia ETH. Each `storeRecord` call costs roughly 0.0005–0.
 
 ## Verifying the deployment
 
-After filling `.env`, run:
+After filling `Backend/.env`, run from the `Backend` folder:
 
 ```bash
 python -m tests.test_publish blockchain
