@@ -292,14 +292,30 @@ export const AddressSheet = () => {
   );
 };
 
+// Dismissal is remembered per browser for the banner's current mode, so the banner
+// comes back when the mode changes.
+const BANNER_KEY = 'bt_demo_banner_dismissed';
+const readDismissed = () => {
+  try {
+    return localStorage.getItem(BANNER_KEY);
+  } catch {
+    return null;
+  }
+};
+
 // Compact public-demo notice. Its height is published as --bt-banner-h so the
 // full-height Investigate layout can subtract it.
 export const PublicDemoBanner = () => {
   const { publicMode } = useInvestigation();
   const ref = useRef(null);
+  const mode = publicMode ? 'public' : null;
+  const [dismissedMode, setDismissedMode] = useState(readDismissed);
+  const [expanded, setExpanded] = useState(false);
+  const visible = Boolean(mode) && dismissedMode !== mode;
+
   useEffect(() => {
     const root = document.documentElement;
-    if (!publicMode || !ref.current) {
+    if (!visible || !ref.current) {
       root.style.removeProperty('--bt-banner-h');
       return undefined;
     }
@@ -311,18 +327,55 @@ export const PublicDemoBanner = () => {
       ro?.disconnect();
       root.style.removeProperty('--bt-banner-h');
     };
-  }, [publicMode]);
-  if (!publicMode) return null;
+  }, [visible]);
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(BANNER_KEY, mode);
+    } catch {
+      // Storage blocked: hidden for this page view only.
+    }
+    setDismissedMode(mode);
+  };
+
+  if (!visible) return null;
   return (
     <div
       ref={ref}
       role="note"
-      className="flex-none flex items-center gap-2 px-4 py-1.5 bg-tertiary/10 border-b border-tertiary/30 text-[12px] leading-snug text-on-surface"
+      className="flex-none flex items-center gap-2 px-4 py-1.5 bg-tertiary/10 border-b border-tertiary/30 text-[12px] leading-snug text-on-surface max-lg:px-3 max-lg:gap-1.5 max-lg:text-[11.5px]"
     >
-      <span className="material-symbols-outlined text-[16px] text-tertiary shrink-0">public</span>
-      <span>
-        <span className="font-bold">Public demo:</span> read-only. Access code needed to publish, anchor or clear.
+      <span className="material-symbols-outlined text-[16px] text-tertiary shrink-0 max-sm:hidden">public</span>
+      {/* Phones/tablets: a short line; "More" shows the full text */}
+      <span id="demo-banner-text" className="flex-1 min-w-0">
+        <span className={expanded ? '' : 'max-lg:hidden'}>
+          <span className="font-bold">Public demo:</span> your traces stay in a private workspace in this browser. Publishing to
+          IPFS + Sepolia is limited to 5 per hour.
+        </span>
+        {!expanded && (
+          <span className="lg:hidden block truncate">
+            <span className="font-bold">Public demo</span> · private workspace · 5 publishes/hour
+          </span>
+        )}
       </span>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls="demo-banner-text"
+        className="lg:hidden shrink-0 -my-2.5 px-1 !min-w-0 font-bold text-tertiary underline underline-offset-2"
+      >
+        {expanded ? 'Less' : 'More'}
+      </button>
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label="Dismiss public demo notice"
+        title="Dismiss"
+        className="shrink-0 -my-1 w-6 h-6 flex items-center justify-center rounded text-on-surface-variant hover:text-on-surface hover:bg-tertiary/10 max-lg:-my-2.5 max-lg:-mr-2"
+      >
+        <span className="material-symbols-outlined text-[16px]">close</span>
+      </button>
     </div>
   );
 };
