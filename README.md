@@ -248,6 +248,29 @@ Frontend interface will be live at `http://localhost:5173`.
 
 ---
 
+## Repository Layout
+
+| Path | What it holds |
+|---|---|
+| `api.py`, `logic.py`, `*_service.py`, ... (root) | FastAPI backend. Render runs `uvicorn api:app` from the repo root, so these stay at the top level. |
+| `stitch_universal_build_framework/` | React + Vite frontend (Vercel's root directory). |
+| `desktop/` | Windows app (pywebview shell) and the Microsoft Store MSIX packaging. |
+| `extension/` | Browser extension (report verifier). |
+| `contracts/` | Sepolia smart contracts and ABIs. |
+| `data/`, `scripts/` | OFAC sanctions snapshot and the script that refreshes it. |
+| `tests/` | Python test suite (`tests/test_fixtures/` holds sample data). |
+| `docs/` | [Deployment](docs/DEPLOYMENT.md), [demo script](docs/DEMO_SCRIPT.md), [integration brief](docs/INTEGRATION_BRIEF.md), sample PDF reports and the original UI design mock-ups. |
+
+### Running the tests
+
+```bash
+pytest -q --ignore=tests/test_publish.py --ignore=tests/test_case_registry.py
+```
+
+The two ignored files make real Sepolia and Pinata writes; run them on purpose with `python -m tests.test_publish both`.
+
+---
+
 ## Security Notes
 
 1. **Dedicated Testnet Wallet Only**: Never use a wallet private key that controls real funds or mainnet assets. Keep a dedicated throwaway testnet wallet funded only with Sepolia ETH.

@@ -97,7 +97,7 @@ Request 0.1–0.5 Sepolia ETH. Each `storeRecord` call costs roughly 0.0005–0.
 After filling `.env`, run:
 
 ```bash
-python test_publish.py blockchain
+python -m tests.test_publish blockchain
 ```
 
 This will send a test transaction and print the Sepolia Etherscan link if successful.
@@ -105,5 +105,5 @@ This will send a test transaction and print the Sepolia Etherscan link if succes
 To test the full flow (Pinata + Sepolia):
 
 ```bash
-python test_publish.py both
+python -m tests.test_publish both
 ```

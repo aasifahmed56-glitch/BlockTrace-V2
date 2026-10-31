@@ -14,13 +14,14 @@ import api
 import logic
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 FIXTURE = os.path.join(HERE, "test_fixtures", "sdn_sample.xml")
 RONIN = "0x098b716b8aaf21512996dc57eb0615e2383e2f96"
 
 
 def _load_script():
     spec = importlib.util.spec_from_file_location(
-        "update_sanctions", os.path.join(HERE, "scripts", "update_sanctions.py"))
+        "update_sanctions", os.path.join(ROOT, "scripts", "update_sanctions.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
