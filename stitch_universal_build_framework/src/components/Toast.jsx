@@ -7,7 +7,7 @@ export const ToastContainer = () => {
   if (!toasts.length) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-2 max-w-md w-full pointer-events-none">
+    <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-2 max-w-md w-full pointer-events-none max-lg:left-3 max-lg:right-3 max-lg:w-auto max-lg:max-w-none max-lg:bottom-[calc(var(--bt-mnav)+12px)] max-lg:[&>*:nth-last-child(n+3)]:hidden" aria-live="polite">
       {toasts.map((toast) => {
         const isError = toast.type === 'error';
         const isSuccess = toast.type === 'success';
@@ -34,7 +34,8 @@ export const ToastContainer = () => {
             </div>
             <button
               onClick={() => removeToast(toast.id)}
-              className="text-on-surface-variant hover:text-on-surface opacity-60 hover:opacity-100 transition-opacity shrink-0"
+              aria-label="Dismiss notification"
+              className="max-lg:-m-2.5 max-lg:flex max-lg:items-center max-lg:justify-center text-on-surface-variant hover:text-on-surface opacity-60 hover:opacity-100 transition-opacity shrink-0"
             >
               <span className="material-symbols-outlined text-[16px]">close</span>
             </button>

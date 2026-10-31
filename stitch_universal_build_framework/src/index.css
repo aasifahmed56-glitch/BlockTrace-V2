@@ -44,3 +44,94 @@
 .material-symbols-outlined.fill {
   font-variation-settings: 'FILL' 1;
 }
+
+/* ==================== Phones and tablets (< 1024 px) ====================
+   Desktop (>= 1024 px) is untouched by everything below. */
+:root {
+  --bt-mtop: calc(56px + env(safe-area-inset-top));
+  --bt-mnav: calc(64px + env(safe-area-inset-bottom));
+}
+
+/* Full-height Investigate workspace: desktop keeps 100vh - 64px; small screens use
+   the dynamic viewport minus the top bar and bottom navigation. */
+.bt-investigate-h {
+  height: calc(100vh - 64px - var(--bt-banner-h, 0px));
+}
+
+@media (max-width: 1023.98px) {
+  .bt-investigate-h {
+    height: calc(100dvh - var(--bt-mtop) - var(--bt-mnav) - var(--bt-banner-h, 0px));
+  }
+
+  /* 16 px stops iOS zooming into a focused field */
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* 44 x 44 px tap targets */
+  button,
+  [role='button'],
+  a.bt-tap,
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+  select {
+    min-height: 44px;
+  }
+  button,
+  [role='button'] {
+    min-width: 44px;
+  }
+
+  /* Larger slider thumbs */
+  input[type='range'] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 32px;
+    background: transparent;
+  }
+  input[type='range']::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: #e1bfb2;
+  }
+  input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 28px;
+    height: 28px;
+    margin-top: -11px;
+    border-radius: 9999px;
+    background: #a43e00;
+    border: 3px solid #ffffff;
+    box-shadow: 0 1px 4px rgba(38, 24, 19, 0.35);
+  }
+  input[type='range']::-moz-range-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: #e1bfb2;
+  }
+  input[type='range']::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 9999px;
+    background: #a43e00;
+    border: 3px solid #ffffff;
+  }
+  input[type='range']:focus-visible {
+    outline: 2px solid #a43e00;
+    outline-offset: 2px;
+  }
+
+  /* Opt-out for elements that are only visually small (e.g. inside a 44 px row) */
+  .bt-tap-reset {
+    min-height: 0 !important;
+    min-width: 0 !important;
+  }
+
+  .bt-no-scrollbar {
+    scrollbar-width: none;
+  }
+  .bt-no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}

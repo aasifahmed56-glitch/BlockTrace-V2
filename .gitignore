@@ -31,3 +31,6 @@ desktop/assets/
 desktop/.tools/
 
 extension/*.zip
+
+# Local UI audit screenshots (not committed)
+docs/mobile-screenshots/

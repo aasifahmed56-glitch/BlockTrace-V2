@@ -55,7 +55,7 @@ export const Navigation = ({
       id="main-sidebar"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={`fixed left-0 top-0 h-full bg-inverse-surface text-inverse-on-surface z-50 flex flex-col shadow-xl transition-[width,transform] duration-300 ease-in-out select-none ${
+      className={`max-lg:hidden fixed left-0 top-0 h-full bg-inverse-surface text-inverse-on-surface z-50 flex flex-col shadow-xl transition-[width,transform] duration-300 ease-in-out select-none ${
         // Mobile visibility & width
         isMobileOpen
           ? 'translate-x-0 w-[280px] shadow-2xl'
@@ -208,28 +208,6 @@ export const Navigation = ({
           </button>
         </div>
       </nav>
-
-      {/* Investigator Profile */}
-      <div
-        className="mt-auto h-16 px-3 border-t border-on-surface-variant/20 flex items-center bg-black/10 hover:bg-black/20 transition-colors shrink-0 overflow-hidden"
-        title={!isExpanded ? "Agent Forensics - Level 4 Investigator" : undefined}
-      >
-        <div className="w-10 h-10 rounded-full border-2 border-primary bg-surface-variant flex items-center justify-center text-on-surface-variant font-bold text-sm shrink-0">
-          AF
-        </div>
-        <div
-          className={`flex flex-col ml-3 overflow-hidden whitespace-nowrap transition-all duration-200 ${
-            isExpanded ? 'opacity-100 max-w-[170px]' : 'opacity-0 max-w-0 pointer-events-none'
-          }`}
-        >
-          <span className="font-body-sm text-body-sm text-white font-bold leading-tight">
-            Agent Forensics
-          </span>
-          <span className="text-[10px] uppercase text-primary-fixed-dim tracking-widest font-bold leading-tight">
-            Level 4 Investigator
-          </span>
-        </div>
-      </div>
     </aside>
   );
 };

@@ -126,7 +126,7 @@ export const CertificatesScreen = () => {
   };
 
   return (
-    <div className="flex flex-col w-full p-xl gap-xl max-w-7xl mx-auto">
+    <div className="flex flex-col w-full p-xl gap-xl max-w-7xl mx-auto max-lg:p-4 max-lg:gap-6">
       {/* Top Title Banner */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-4 border-b border-outline-variant/50">
         <div>
@@ -149,7 +149,7 @@ export const CertificatesScreen = () => {
       {/* Two Column Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Left Column: Issue Certificate */}
-        <section className="flex flex-col gap-5 bg-surface-container rounded-2xl p-8 shadow-md border border-outline-variant/60 relative overflow-hidden">
+        <section className="flex flex-col gap-5 bg-surface-container rounded-2xl p-8 shadow-md border border-outline-variant/60 relative overflow-hidden max-lg:p-4">
           <div className="flex items-center gap-2 pb-2 border-b border-outline-variant/40">
             <span className="material-symbols-outlined text-primary text-[24px]">verified_user</span>
             <h2 className="font-headline-md text-xl font-bold text-on-surface">
@@ -234,13 +234,13 @@ export const CertificatesScreen = () => {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between text-xs pt-1">
+              <div className="flex items-center justify-between text-xs pt-1 max-lg:flex-col max-lg:items-stretch max-lg:gap-2">
                 <span className="text-on-surface-variant font-address-md text-[11px]">
                   Timestamp: {issuedCert.created_at}
                 </span>
                 <button
                   onClick={handleDownloadCertificate}
-                  className="bg-surface hover:bg-surface-variant text-primary font-label-caps text-xs uppercase px-3 py-1.5 rounded-lg border border-primary/40 flex items-center gap-1 font-bold shadow-xs transition-colors"
+                  className="bg-surface hover:bg-surface-variant text-primary font-label-caps text-xs uppercase px-3 py-1.5 rounded-lg border border-primary/40 flex items-center gap-1 font-bold shadow-xs transition-colors max-lg:justify-center max-lg:min-h-[48px]"
                 >
                   <span className="material-symbols-outlined text-[16px]">download</span>
                   <span>Download Certificate</span>
@@ -251,7 +251,7 @@ export const CertificatesScreen = () => {
         </section>
 
         {/* Right Column: Verify Certificate */}
-        <section className="flex flex-col gap-5 bg-surface-container rounded-2xl p-8 shadow-md border border-outline-variant/60 relative">
+        <section className="flex flex-col gap-5 bg-surface-container rounded-2xl p-8 shadow-md border border-outline-variant/60 relative max-lg:p-4">
           <div className="flex items-center gap-2 pb-2 border-b border-outline-variant/40">
             <span className="material-symbols-outlined text-tertiary text-[24px]">policy</span>
             <h2 className="font-headline-md text-xl font-bold text-on-surface">
@@ -269,12 +269,21 @@ export const CertificatesScreen = () => {
             onDragLeave={handleDrag}
             onDragOver={handleDrag}
             onDrop={handleDrop}
-            className={`flex-1 flex flex-col items-center justify-center gap-3 border-2 border-dashed rounded-2xl p-8 cursor-pointer transition-all min-h-[220px] text-center ${
+            className={`flex-1 flex flex-col items-center justify-center gap-3 border-2 border-dashed rounded-2xl p-8 cursor-pointer transition-all min-h-[220px] text-center max-lg:min-h-[180px] max-lg:p-5 ${
               dragActive
                 ? 'border-primary bg-primary/5'
                 : 'border-outline-variant bg-surface hover:bg-surface-container-high'
             }`}
             onClick={() => document.getElementById('cert-upload-input')?.click()}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload a certificate JSON file"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                document.getElementById('cert-upload-input')?.click();
+              }
+            }}
           >
             <input
               id="cert-upload-input"
