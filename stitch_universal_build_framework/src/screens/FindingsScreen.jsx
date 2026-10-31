@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useInvestigation } from '../context/InvestigationContext';
 import { getReportUrl } from '../api/client';
+import { useCompact } from '../utils/useCompact';
 
 // The backend narrative (logic.build_narrative) marks up wallet addresses and key
 // figures with two tags. Turn just those into elements and keep everything else as
@@ -42,7 +43,10 @@ export const FindingsScreen = () => {
     circularDetections,
     isLoadingFindings,
     setActiveTab,
+    summary,
+    openAddressSheet,
   } = useInvestigation();
+  const compact = useCompact();
 
   // Expandable list toggles (showing 5 by default)
   const [showAllRisk, setShowAllRisk] = useState(false);
@@ -58,9 +62,25 @@ export const FindingsScreen = () => {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   };
 
+  // Desktop: click copies. Phones/tablets: tap opens the full-value sheet (copy + explorer).
   const copyToClipboard = (text) => {
+    if (compact) {
+      openAddressSheet(text);
+      return;
+    }
     navigator.clipboard.writeText(text);
   };
+  const highRiskCount = riskData.filter((r) => r.tier === 'High').length;
+
+  // Heuristic rows: plain text on desktop, a tappable address on small screens
+  const Addr = ({ value }) =>
+    compact ? (
+      <button type="button" onClick={() => openAddressSheet(value)} className="font-mono text-left underline decoration-dotted underline-offset-2">
+        {truncate(value)}
+      </button>
+    ) : (
+      <>{truncate(value)}</>
+    );
 
   const displayedRisk = showAllRisk ? riskData : riskData.slice(0, 5);
   const displayedHub = showAllHub ? hubDetections : hubDetections.slice(0, 5);
@@ -70,7 +90,7 @@ export const FindingsScreen = () => {
   const displayedCircular = showAllCircular ? circularDetections : circularDetections.slice(0, 5);
 
   return (
-    <div className="flex flex-col w-full px-xl py-lg space-y-xl max-w-7xl mx-auto">
+    <div className="flex flex-col w-full px-xl py-lg space-y-xl max-w-7xl mx-auto max-lg:px-4 max-lg:py-4 max-lg:space-y-0 max-lg:gap-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between w-full gap-4 pb-4 border-b border-outline-variant/50">
         <div>
@@ -82,19 +102,19 @@ export const FindingsScreen = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 max-sm:flex-col max-sm:items-stretch">
           <a
             href={getReportUrl(startWallet)}
             target="_blank"
             rel="noopener noreferrer"
-            className="px-4 py-2 rounded-lg border-2 border-primary text-primary font-label-caps text-xs uppercase hover:bg-primary hover:text-white transition-colors flex items-center gap-1.5 font-bold shadow-xs"
+            className="px-4 py-2 rounded-lg border-2 border-primary text-primary font-label-caps text-xs uppercase hover:bg-primary hover:text-white transition-colors flex items-center gap-1.5 font-bold shadow-xs bt-tap max-lg:justify-center"
           >
             <span className="material-symbols-outlined text-[16px]">picture_as_pdf</span>
             <span>Export PDF</span>
           </a>
           <button
             onClick={() => setActiveTab('certificates')}
-            className="px-4 py-2 rounded-lg bg-primary text-white font-label-caps text-xs uppercase hover:bg-primary-container transition-colors flex items-center gap-1.5 shadow-md font-bold"
+            className="px-4 py-2 rounded-lg bg-primary text-white font-label-caps text-xs uppercase hover:bg-primary-container transition-colors flex items-center gap-1.5 shadow-md font-bold max-lg:justify-center"
           >
             <span className="material-symbols-outlined text-[16px]">verified</span>
             <span>Issue Proof</span>
@@ -102,9 +122,27 @@ export const FindingsScreen = () => {
         </div>
       </div>
 
+      {/* Phones and tablets: summary stat cards */}
+      <div className="lg:hidden grid grid-cols-2 gap-3 max-lg:order-1">
+        {[
+          ['Wallets traced', summary.wallets_traced, 'account_tree', 'text-on-surface'],
+          ['Transactions', summary.transactions_mapped, 'swap_horiz', 'text-on-surface'],
+          ['Sanctioned hits', sanctions.length, 'policy', sanctions.length ? 'text-error' : 'text-[#2e682c]'],
+          ['High-risk wallets', highRiskCount, 'shield', highRiskCount ? 'text-primary' : 'text-on-surface'],
+        ].map(([label, value, icon, tone]) => (
+          <div key={label} className="bg-surface-container rounded-xl p-3 border border-outline-variant/60 flex flex-col gap-1 min-w-0">
+            <span className="flex items-center justify-between gap-1 font-label-caps text-[11px] uppercase text-on-surface-variant font-bold">
+              <span className="truncate">{label}</span>
+              <span className={`material-symbols-outlined text-[18px] ${tone}`}>{icon}</span>
+            </span>
+            <span className={`font-headline-md text-2xl font-bold ${tone}`}>{value}</span>
+          </div>
+        ))}
+      </div>
+
       {/* Loading state indicator */}
       {isLoadingFindings && (
-        <div className="p-4 bg-surface-container rounded-xl flex items-center gap-3 border border-outline-variant">
+        <div className="p-4 bg-surface-container rounded-xl flex items-center gap-3 border border-outline-variant max-lg:order-2">
           <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
           <span className="text-xs font-label-caps uppercase text-primary font-bold">
             Evaluating detection heuristics...
@@ -113,7 +151,7 @@ export const FindingsScreen = () => {
       )}
 
       {/* Narrative Summary Section */}
-      <section className="bg-surface-container rounded-xl p-6 border-l-4 border-l-primary shadow-sm relative overflow-hidden">
+      <section className="bg-surface-container rounded-xl p-6 border-l-4 border-l-primary shadow-sm relative overflow-hidden max-lg:order-4 max-lg:p-4">
         <div className="flex items-center gap-2 mb-3">
           <span className="material-symbols-outlined text-primary text-[22px]">auto_stories</span>
           <h2 className="font-headline-md text-xl font-bold text-on-surface">
@@ -121,7 +159,7 @@ export const FindingsScreen = () => {
           </h2>
         </div>
 
-        <div className="font-body-md text-sm text-on-surface space-y-3 leading-relaxed">
+        <div className="font-body-md text-sm text-on-surface space-y-3 leading-relaxed max-lg:text-base">
           {narrativeParagraphs && narrativeParagraphs.length > 0 ? (
             narrativeParagraphs.map((para, index) => <p key={index}>{renderNarrative(para)}</p>)
           ) : (
@@ -137,7 +175,7 @@ export const FindingsScreen = () => {
       </section>
 
       {/* Split Grid: Sanctions Screening & Risk Overview */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 max-lg:order-3">
         {/* Sanctions Screening (1 column) */}
         <section className="lg:col-span-1 flex flex-col space-y-4">
           <div className="flex items-center justify-between">
@@ -297,7 +335,7 @@ export const FindingsScreen = () => {
       </div>
 
       {/* Detection Technique Panels (Row 1: 3 panels, Row 2: 2 panels) */}
-      <section className="space-y-6 pt-4">
+      <section className="space-y-6 pt-4 max-lg:order-5 max-lg:pt-0">
         <h3 className="font-headline-md text-xl font-bold text-on-surface">
           Explainable Pattern Heuristics
         </h3>
@@ -322,7 +360,7 @@ export const FindingsScreen = () => {
                     className="flex items-center justify-between p-2 rounded-lg bg-surface-container-low text-xs"
                   >
                     <div className="flex items-center gap-1.5">
-                      <span className="font-address-md font-mono">{truncate(h.wallet)}</span>
+                      <span className="font-address-md font-mono"><Addr value={h.wallet} /></span>
                       {h.label && (
                         <span className="text-primary text-[12px]" title={h.label}>
                           ★
@@ -370,7 +408,7 @@ export const FindingsScreen = () => {
                     className="flex items-center justify-between p-2 rounded-lg bg-surface-container-low text-xs"
                   >
                     <div className="flex items-center gap-1.5">
-                      <span className="font-address-md font-mono">{truncate(f.wallet)}</span>
+                      <span className="font-address-md font-mono"><Addr value={f.wallet} /></span>
                       {f.label && (
                         <span className="text-primary text-[12px]" title={f.label}>
                           ★
@@ -419,7 +457,7 @@ export const FindingsScreen = () => {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-address-md font-mono">{truncate(p.wallet)}</span>
+                        <span className="font-address-md font-mono"><Addr value={p.wallet} /></span>
                         {p.label && (
                           <span className="text-primary text-[12px]" title={p.label}>
                             ★
@@ -479,9 +517,9 @@ export const FindingsScreen = () => {
                     className="flex items-center justify-between p-2 rounded-lg bg-surface-container-low text-xs"
                   >
                     <div className="flex items-center gap-1.5 font-address-md font-mono text-[11px]">
-                      <span>{truncate(r.from)}</span>
+                      <span><Addr value={r.from} /></span>
                       <span className="text-on-surface-variant">→</span>
-                      <span>{truncate(r.to)}</span>
+                      <span><Addr value={r.to} /></span>
                     </div>
                     <span className="font-address-md font-bold text-[#FF6D1F] bg-surface px-2 py-0.5 rounded border border-outline-variant/40">
                       {r.value} ETH
@@ -526,7 +564,7 @@ export const FindingsScreen = () => {
                     className="flex items-center justify-between p-2 rounded-lg bg-surface-container-low text-xs"
                   >
                     <div className="flex items-center gap-1.5">
-                      <span className="font-address-md font-mono">{truncate(c.wallet)}</span>
+                      <span className="font-address-md font-mono"><Addr value={c.wallet} /></span>
                       {c.label && (
                         <span className="text-primary text-[12px]" title={c.label}>
                           ★

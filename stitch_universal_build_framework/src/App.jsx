@@ -3,6 +3,7 @@ import { InvestigationProvider, useInvestigation } from './context/Investigation
 import { Navigation } from './components/Navigation';
 import { Header } from './components/Header';
 import { ToastContainer } from './components/Toast';
+import { MobileTopBar, BottomNav, AddressSheet, PublicDemoBanner } from './components/mobile/MobileShell';
 import { LandingScreen } from './screens/LandingScreen';
 import { InvestigateScreen } from './screens/InvestigateScreen';
 import { FindingsScreen } from './screens/FindingsScreen';
@@ -70,14 +71,19 @@ const MainLayout = () => {
         onCloseMobile={handleCloseMobile}
       />
 
+      {/* Phones and tablets (< 1024 px): top bar + bottom navigation instead of the sidebar */}
+      <MobileTopBar />
+      <BottomNav />
+
       {/* Main Content Area (Stationary 72px left padding on desktop; never shifts on hover/expand) */}
-      <div className="md:pl-[72px] w-full flex flex-col min-h-screen">
+      <div className="lg:pl-[72px] w-full flex flex-col min-h-screen max-lg:min-h-[100dvh]">
         <Header
           onToggleSidebar={handleToggleSidebar}
           isLocked={isLocked}
           isMobileOpen={isMobileOpen}
         />
-        <main className="relative pt-16 bg-surface min-h-[calc(100vh-64px)] flex flex-col flex-1">
+        <main className="relative pt-16 bg-surface min-h-[calc(100vh-64px)] flex flex-col flex-1 max-lg:pt-[var(--bt-mtop)] max-lg:pb-[var(--bt-mnav)] max-lg:min-h-0">
+          <PublicDemoBanner />
           {activeTab === 'investigate' && <InvestigateScreen />}
           {activeTab === 'findings' && <FindingsScreen />}
           {activeTab === 'certificates' && <CertificatesScreen />}
@@ -88,6 +94,7 @@ const MainLayout = () => {
 
       {/* Global Toast Notifications */}
       <ToastContainer />
+      <AddressSheet />
     </div>
   );
 };

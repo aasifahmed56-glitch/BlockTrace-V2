@@ -24,7 +24,7 @@ export const Header = ({ onToggleSidebar, isLocked = false, isMobileOpen = false
         </div>
       )}
 
-      <header className={`fixed ${serverWaking ? 'top-[36px]' : 'top-0'} left-0 md:left-[72px] right-0 h-16 bg-surface/80 backdrop-blur-xl z-40 flex items-center justify-between px-md sm:px-xl border-b border-outline-variant transition-[top] duration-300`}>
+      <header className={`max-lg:hidden fixed ${serverWaking ? 'top-[36px]' : 'top-0'} left-0 md:left-[72px] right-0 h-16 bg-surface/80 backdrop-blur-xl z-40 flex items-center justify-between px-md sm:px-xl border-b border-outline-variant transition-[top] duration-300`}>
         {/* Left: Hamburger / Lock Toggle & Search Bar */}
         <div className="flex items-center gap-sm sm:gap-md">
           <button
@@ -89,14 +89,6 @@ export const Header = ({ onToggleSidebar, isLocked = false, isMobileOpen = false
             <span className={`material-symbols-outlined text-[20px] ${isLoadingGraph ? 'animate-spin' : ''}`}>
               sync
             </span>
-          </button>
-
-          {/* Notification Bell */}
-          <button className="relative p-sm text-on-surface-variant hover:text-primary transition-colors">
-            <span className="material-symbols-outlined text-[20px]">notifications</span>
-            {sanctions && sanctions.length > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-error rounded-full" />
-            )}
           </button>
         </div>
       </header>

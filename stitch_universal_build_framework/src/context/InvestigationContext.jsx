@@ -14,6 +14,7 @@ import {
   fetchRoundDetections,
   fetchCircularDetections,
   checkHealth,
+  clearGraph,
   getErrorMessage,
 } from '../api/client';
 
@@ -26,6 +27,8 @@ export const InvestigationProvider = ({ children }) => {
   // Server state
   const [serverWaking, setServerWaking] = useState(false);
   const [serverReady, setServerReady] = useState(false);
+  // /health reports public_mode; the UI then shows the public-demo banner
+  const [publicMode, setPublicMode] = useState(false);
 
   // Core Data
   const [chains, setChains] = useState(['Ethereum', 'BNB Smart Chain', 'Polygon']);
@@ -42,6 +45,11 @@ export const InvestigationProvider = ({ children }) => {
   const [graphTotals, setGraphTotals] = useState({ total: 0, returned: 0 });
   // "Show 0-ETH contract calls" — off by default; changes what every count includes
   const [showZeroValue, setShowZeroValueState] = useState(false);
+  // "Include internal transfers" — applies to the next trace (shared by the Investigate
+  // form and the phone overflow menu)
+  const [includeInternal, setIncludeInternal] = useState(false);
+  // Full-value sheet for a long address or hash on small screens
+  const [addressSheet, setAddressSheet] = useState(null);
   
   // Path finding isolation state
   const [activePathEdges, setActivePathEdges] = useState(null);
@@ -90,14 +98,18 @@ export const InvestigationProvider = ({ children }) => {
 
     const doHealthCheck = async () => {
       try {
+        let health;
         try {
-          await checkHealth();
+          health = await checkHealth();
         } catch {
           // Retry once on network failure (Render cold start)
           if (cancelled) return;
-          await checkHealth();
+          health = await checkHealth();
         }
-        if (!cancelled) setServerReady(true);
+        if (!cancelled) {
+          setServerReady(true);
+          setPublicMode(Boolean(health?.public_mode));
+        }
       } catch (err) {
         if (!cancelled) console.error('Server health check failed after retry:', err);
       } finally {
@@ -248,6 +260,40 @@ export const InvestigationProvider = ({ children }) => {
     setPathBannerMessage(null);
   };
 
+  // Clear the graph (Investigate toolbar and the phone overflow menu)
+  const clearSession = async () => {
+    setActionLoading(true);
+    try {
+      await clearGraph();
+      resetPathView();
+      setStartWallet('');
+      await refreshGraphAndSummary();
+      await refreshFindings();
+      showToast('Graph and trace session cleared successfully.', 'info');
+    } catch (err) {
+      console.error(err);
+      showToast(getErrorMessage(err), 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Export graph as JSON
+  const exportGraph = () => {
+    const dataStr = JSON.stringify(edges, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `blocktrace_graph_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Graph exported as JSON file.', 'success');
+  };
+
+  const openAddressSheet = useCallback((address, label) => setAddressSheet(address ? { address, label } : null), []);
+  const closeAddressSheet = useCallback(() => setAddressSheet(null), []);
+
   const value = {
     activeTab,
     setActiveTab,
@@ -290,6 +336,14 @@ export const InvestigationProvider = ({ children }) => {
     refreshFindings,
     serverWaking,
     serverReady,
+    publicMode,
+    includeInternal,
+    setIncludeInternal,
+    clearSession,
+    exportGraph,
+    addressSheet,
+    openAddressSheet,
+    closeAddressSheet,
   };
 
   return (

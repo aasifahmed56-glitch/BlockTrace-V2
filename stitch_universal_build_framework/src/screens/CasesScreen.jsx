@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useInvestigation } from '../context/InvestigationContext';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { describeScope } from '../utils/scope';
+import { midTruncate } from '../utils/useCompact';
+import { Sheet } from '../components/mobile/Sheet';
 import {
   fetchSavedCases,
   saveCase,
@@ -51,6 +53,9 @@ export const CasesScreen = () => {
   const [publishResult, setPublishResult] = useState(null);
   const [publishError, setPublishError] = useState(null);
   const [copiedField, setCopiedField] = useState(null);
+
+  // Phones/tablets: the saved case whose action menu is open
+  const [menuCase, setMenuCase] = useState(null);
 
   // Load Saved Cases List
   const loadCasesList = async () => {
@@ -294,7 +299,7 @@ export const CasesScreen = () => {
   };
 
   return (
-    <div className="flex flex-col w-full px-xl py-lg gap-8 max-w-7xl mx-auto">
+    <div className="flex flex-col w-full px-xl py-lg gap-8 max-w-7xl mx-auto max-lg:px-4 max-lg:py-4 max-lg:gap-6">
       {/* Header */}
       <div className="pb-4 border-b border-outline-variant/50">
         <h1 className="font-headline-lg text-3xl font-bold text-on-surface mb-2">
@@ -312,7 +317,7 @@ export const CasesScreen = () => {
           <span>Investigation Dossier Report</span>
         </h2>
 
-        <div className="bg-surface-container rounded-2xl shadow-md p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 border border-outline-variant/60 relative overflow-hidden">
+        <div className="bg-surface-container rounded-2xl shadow-md p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 border border-outline-variant/60 relative overflow-hidden max-lg:!flex-col max-lg:!items-stretch max-lg:p-4 max-lg:gap-4">
           <div className="flex flex-col gap-2 relative z-10">
             <h3 className="font-headline-md text-lg font-bold text-on-surface">
               Active Case Summary Export
@@ -321,7 +326,7 @@ export const CasesScreen = () => {
               Comprehensive report detailing tracked addresses, heuristic detection breakdown, high-risk sanctions hits, and cryptographic verification status.
             </p>
 
-            <div className="flex items-center gap-3 mt-2">
+            <div className="flex items-center gap-3 mt-2 max-lg:flex-wrap max-lg:gap-2">
               <span
                 className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-label-caps text-xs font-bold ${
                   sanctions.length > 0
@@ -342,12 +347,12 @@ export const CasesScreen = () => {
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-3 relative z-10 shrink-0">
+          <div className="flex flex-col sm:flex-row gap-3 relative z-10 shrink-0 max-lg:!flex-col max-lg:w-full">
             <a
               href={getReportUrl(startWallet)}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 px-6 py-3 bg-primary text-white hover:bg-primary-container transition-all font-label-caps text-xs uppercase rounded-xl shadow-md hover:shadow-lg font-bold"
+              className="flex items-center justify-center gap-2 px-6 py-3 bg-primary text-white hover:bg-primary-container transition-all font-label-caps text-xs uppercase rounded-xl shadow-md hover:shadow-lg font-bold bt-tap max-lg:w-full"
             >
               <span className="material-symbols-outlined text-[18px]">download</span>
               <span>Download PDF Report</span>
@@ -355,7 +360,7 @@ export const CasesScreen = () => {
             <button
               onClick={handlePublish}
               disabled={isPublishing || edges.length === 0}
-              className="flex items-center justify-center gap-2 px-6 py-3 bg-tertiary text-white hover:bg-tertiary/80 transition-all font-label-caps text-xs uppercase rounded-xl shadow-md hover:shadow-lg font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center justify-center gap-2 px-6 py-3 bg-tertiary text-white hover:bg-tertiary/80 transition-all font-label-caps text-xs uppercase rounded-xl shadow-md hover:shadow-lg font-bold disabled:opacity-50 disabled:cursor-not-allowed max-lg:w-full"
             >
               {isPublishing ? (
                 <>
@@ -379,12 +384,12 @@ export const CasesScreen = () => {
               <span className="material-symbols-outlined text-tertiary text-[20px]">verified</span>
               Published Successfully
             </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-lg:!grid-cols-1">
               {/* Investigation Hash */}
               <div className="bg-surface rounded-lg p-3 border border-outline-variant/40">
                 <span className="font-label-caps text-[10px] text-on-surface-variant uppercase block mb-1">Investigation Hash</span>
                 <div className="flex items-center gap-2">
-                  <span className="font-address-md text-[11px] text-on-surface font-mono truncate flex-1">{publishResult.investigation_hash}</span>
+                  <span className="font-address-md text-[11px] text-on-surface font-mono truncate flex-1 max-lg:text-[13px]" title={publishResult.investigation_hash}><span className="max-lg:hidden">{publishResult.investigation_hash}</span><span className="lg:hidden">{midTruncate(publishResult.investigation_hash, 10, 8)}</span></span>
                   <button onClick={() => copyToClipboard(publishResult.investigation_hash, 'hash')} className="p-1 hover:bg-surface-variant rounded transition-colors shrink-0" title="Copy">
                     <span className="material-symbols-outlined text-[16px] text-on-surface-variant">{copiedField === 'hash' ? 'check' : 'content_copy'}</span>
                   </button>
@@ -394,7 +399,7 @@ export const CasesScreen = () => {
               <div className="bg-surface rounded-lg p-3 border border-outline-variant/40">
                 <span className="font-label-caps text-[10px] text-on-surface-variant uppercase block mb-1">IPFS CID</span>
                 <div className="flex items-center gap-2">
-                  <a href={publishResult.gateway_url} target="_blank" rel="noopener noreferrer" className="font-address-md text-[11px] text-primary hover:underline font-mono truncate flex-1">{publishResult.cid}</a>
+                  <a href={publishResult.gateway_url} target="_blank" rel="noopener noreferrer" className="font-address-md text-[11px] text-primary hover:underline font-mono truncate flex-1 max-lg:text-[13px] max-lg:min-h-[44px] max-lg:flex max-lg:items-center" title={publishResult.cid}><span className="max-lg:hidden">{publishResult.cid}</span><span className="lg:hidden">{midTruncate(publishResult.cid, 10, 8)} ↗</span></a>
                   <button onClick={() => copyToClipboard(publishResult.cid, 'cid')} className="p-1 hover:bg-surface-variant rounded transition-colors shrink-0" title="Copy">
                     <span className="material-symbols-outlined text-[16px] text-on-surface-variant">{copiedField === 'cid' ? 'check' : 'content_copy'}</span>
                   </button>
@@ -405,7 +410,7 @@ export const CasesScreen = () => {
                 <div className="bg-surface rounded-lg p-3 border border-outline-variant/40 md:col-span-2">
                   <span className="font-label-caps text-[10px] text-on-surface-variant uppercase block mb-1">Sepolia Transaction</span>
                   <div className="flex items-center gap-2">
-                    <a href={publishResult.explorer_url} target="_blank" rel="noopener noreferrer" className="font-address-md text-[11px] text-primary hover:underline font-mono truncate flex-1">{publishResult.tx_hash}</a>
+                    <a href={publishResult.explorer_url} target="_blank" rel="noopener noreferrer" className="font-address-md text-[11px] text-primary hover:underline font-mono truncate flex-1 max-lg:text-[13px] max-lg:min-h-[44px] max-lg:flex max-lg:items-center" title={publishResult.tx_hash}><span className="max-lg:hidden">{publishResult.tx_hash}</span><span className="lg:hidden">{midTruncate(publishResult.tx_hash, 10, 8)} ↗</span></a>
                     <button onClick={() => copyToClipboard(publishResult.tx_hash, 'tx')} className="p-1 hover:bg-surface-variant rounded transition-colors shrink-0" title="Copy">
                       <span className="material-symbols-outlined text-[16px] text-on-surface-variant">{copiedField === 'tx' ? 'check' : 'content_copy'}</span>
                     </button>
@@ -440,7 +445,7 @@ export const CasesScreen = () => {
 
       {/* Saved Investigation Cases Section */}
       <section className="flex flex-col gap-4 mt-4">
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 max-lg:!flex-col max-lg:!items-stretch">
           <div className="flex items-center gap-2">
             <h2 className="font-headline-md text-xl font-bold text-on-surface flex items-center gap-2">
               <span className="material-symbols-outlined text-tertiary text-[22px]">folder_shared</span>
@@ -453,25 +458,25 @@ export const CasesScreen = () => {
 
           {/* Save Current Case Form */}
           <form onSubmit={handleSaveCurrentCase} className="flex flex-col gap-2 w-full lg:w-auto">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 max-lg:flex-col max-lg:items-stretch">
               <input
                 type="text"
                 value={newCaseNumber}
                 onChange={(e) => handleCaseNumberChange(e.target.value)}
                 placeholder="Case # (e.g. BT-2026-0001, optional)"
-                className={`bg-surface text-on-surface border ${caseNumberError ? 'border-error' : 'border-outline-variant'} focus:ring-1 focus:ring-primary text-xs px-3.5 py-2 rounded-lg outline-none w-full sm:w-48 font-mono shadow-xs`}
+                className={`bg-surface text-on-surface border ${caseNumberError ? 'border-error' : 'border-outline-variant'} focus:ring-1 focus:ring-primary text-xs px-3.5 py-2 rounded-lg outline-none w-full sm:w-48 font-mono shadow-xs max-lg:!w-full`}
               />
               <input
                 type="text"
                 value={newCaseName}
                 onChange={(e) => setNewCaseName(e.target.value)}
                 placeholder="Enter case name..."
-                className="bg-surface text-on-surface border border-outline-variant focus:ring-1 focus:ring-primary text-xs px-3.5 py-2 rounded-lg outline-none w-full sm:w-56 font-medium shadow-xs"
+                className="bg-surface text-on-surface border border-outline-variant focus:ring-1 focus:ring-primary text-xs px-3.5 py-2 rounded-lg outline-none w-full sm:w-56 font-medium shadow-xs max-lg:!w-full"
               />
               <button
                 type="submit"
                 disabled={isSavingCase || actionLoading || edges.length === 0 || !!caseNumberError}
-                className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white hover:bg-primary-container transition-colors font-label-caps text-xs uppercase rounded-lg shadow-sm whitespace-nowrap font-bold disabled:opacity-50"
+                className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white hover:bg-primary-container transition-colors font-label-caps text-xs uppercase rounded-lg shadow-sm whitespace-nowrap font-bold disabled:opacity-50 max-lg:w-full max-lg:justify-center max-lg:min-h-[48px]"
               >
                 {isSavingCase ? (
                   <>
@@ -487,7 +492,7 @@ export const CasesScreen = () => {
               </button>
             </div>
 
-            <div className="flex items-center justify-between sm:justify-start gap-4 px-1">
+            <div className="flex items-center justify-between sm:justify-start gap-4 px-1 max-lg:!flex-col max-lg:items-start max-lg:gap-2 max-lg:!justify-start">
               {caseNumberError ? (
                 <span className="text-[11px] text-error font-medium flex items-center gap-1">
                   <span className="material-symbols-outlined text-[14px]">error</span>
@@ -499,21 +504,147 @@ export const CasesScreen = () => {
                 </span>
               )}
 
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none max-lg:min-h-[44px] max-lg:gap-2.5">
                 <input
                   type="checkbox"
                   checked={anchorOnChain}
                   onChange={(e) => setAnchorOnChain(e.target.checked)}
-                  className="rounded border-outline-variant text-primary focus:ring-primary h-3.5 w-3.5"
+                  className="rounded border-outline-variant text-primary focus:ring-primary h-3.5 w-3.5 max-lg:h-5 max-lg:w-5"
                 />
-                <span className="text-[11px] text-on-surface-variant font-medium">Anchor on Sepolia</span>
+                <span className="text-[11px] text-on-surface-variant font-medium max-lg:text-sm">Anchor on Sepolia</span>
               </label>
             </div>
           </form>
         </div>
 
+        {/* Phones and tablets: saved cases as cards, actions in a menu */}
+        <ul className="lg:hidden flex flex-col gap-3" aria-label="Saved investigation cases">
+          {isLoadingCases ? (
+            <li className="p-6 text-center text-on-surface-variant text-sm bg-surface rounded-xl border border-outline-variant/60">
+              <span className="inline-flex items-center gap-2">
+                <span className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                Loading cases...
+              </span>
+            </li>
+          ) : savedCases.length === 0 ? (
+            <li className="p-6 text-center text-on-surface-variant text-sm bg-surface rounded-xl border border-dashed border-outline-variant flex flex-col items-center gap-2">
+              <span className="material-symbols-outlined text-[32px] text-outline">folder_off</span>
+              <span>No saved cases yet. Give the current session a name above and tap Save Case.</span>
+            </li>
+          ) : (
+            savedCases.map((c) => (
+              <li
+                key={c.case_number && c.case_number !== 'Legacy' ? c.case_number : c.name}
+                className="bg-surface rounded-xl border border-outline-variant/60 shadow-sm p-4 flex flex-col gap-2"
+              >
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5">
+                    {c.case_number === 'Legacy' ? (
+                      <span className="px-2 py-0.5 rounded text-[11px] bg-surface-variant text-on-surface-variant font-mono">Legacy</span>
+                    ) : (
+                      <span className="font-mono text-primary font-bold text-xs bg-primary/10 px-2 py-0.5 rounded border border-primary/20">
+                        {c.case_number}
+                      </span>
+                    )}
+                    {c.blockchain_status === 'anchored' ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#e8f5e9] text-[#2e682c] border border-[#a5d6a7]">
+                        <span className="material-symbols-outlined text-[13px]">verified</span>
+                        Anchored {c.version ? `v${c.version}` : ''}
+                      </span>
+                    ) : c.blockchain_status === 'failed' ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-error/15 text-error border border-error/30">
+                        <span className="material-symbols-outlined text-[13px]">warning</span>
+                        Anchor failed
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-surface-variant text-on-surface-variant">
+                        Not anchored
+                      </span>
+                    )}
+                    {c.encrypted && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#e0f2fe] text-[#0369a1] border border-[#bae6fd]">
+                        <span className="material-symbols-outlined text-[12px]">lock</span>
+                        Encrypted
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMenuCase(c)}
+                    className="-mr-2 -mt-2 w-11 h-11 flex items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-container shrink-0"
+                    aria-label={`Actions for case ${c.name}`}
+                    aria-haspopup="dialog"
+                  >
+                    <span className="material-symbols-outlined text-[22px]">more_vert</span>
+                  </button>
+                </div>
+                <p className="font-semibold text-on-surface text-[15px] break-words">{c.name}</p>
+                <p className="text-xs text-on-surface-variant font-address-md">
+                  {c.saved_at ? c.saved_at.replace('T', ' ').slice(0, 16) : 'Recently saved'} · {c.edge_count} edges
+                </p>
+                <p className="text-xs text-on-surface-variant break-words">{describeScope(c.scope) || 'Scope not recorded'}</p>
+                {(verifyingCaseNumber === c.case_number || retryingCaseNumber === c.case_number || reanchoringCaseNumber === c.case_number) && (
+                  <p className="text-xs text-primary font-semibold flex items-center gap-1.5">
+                    <span className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                    Working…
+                  </p>
+                )}
+              </li>
+            ))
+          )}
+        </ul>
+
+        <Sheet open={!!menuCase} onClose={() => setMenuCase(null)} title={menuCase ? menuCase.name : ''} initial="auto" draggable={false}>
+          {menuCase && (() => {
+            const c = menuCase;
+            const numbered = c.case_number && c.case_number !== 'Legacy';
+            const run = (fn) => () => {
+              setMenuCase(null);
+              fn();
+            };
+            const row = 'w-full min-h-[52px] flex items-center gap-3 px-2 rounded-lg text-left text-[15px] font-medium hover:bg-surface-container disabled:opacity-50';
+            return (
+              <div className="flex flex-col gap-1">
+                <button type="button" className={`${row} text-on-surface`} onClick={run(() => setLoadTargetCase(c.name))}>
+                  <span className="material-symbols-outlined text-[22px] text-primary">file_open</span>Load into workspace
+                </button>
+                {numbered && (
+                  <button type="button" className={`${row} text-on-surface`} onClick={run(() => handleVerifyCase(c.case_number))} disabled={verifyingCaseNumber === c.case_number}>
+                    <span className="material-symbols-outlined text-[22px] text-tertiary">shield</span>Verify on Sepolia
+                  </button>
+                )}
+                {numbered && c.blockchain_status !== 'anchored' && (
+                  <button type="button" className={`${row} text-on-surface`} onClick={run(() => handleRetryAnchor(c.case_number))} disabled={retryingCaseNumber === c.case_number}>
+                    <span className="material-symbols-outlined text-[22px]">anchor</span>
+                    {c.blockchain_status === 'failed' ? 'Retry anchor' : 'Anchor on Sepolia'}
+                  </button>
+                )}
+                {numbered && c.blockchain_status === 'anchored' && !c.encrypted && (
+                  <button type="button" className={`${row} text-on-surface`} onClick={run(() => handleReanchor(c.case_number))} disabled={reanchoringCaseNumber === c.case_number}>
+                    <span className="material-symbols-outlined text-[22px]">lock_reset</span>Re-anchor (encrypted)
+                  </button>
+                )}
+                {c.cid && (
+                  <a className={`${row} text-on-surface`} href={c.ipfs_gateway_url || `https://gateway.pinata.cloud/ipfs/${c.cid}`} target="_blank" rel="noopener noreferrer">
+                    <span className="material-symbols-outlined text-[22px]">cloud</span>View IPFS snapshot
+                  </a>
+                )}
+                {c.tx_hash && (
+                  <a className={`${row} text-on-surface`} href={c.explorer_url || `https://sepolia.etherscan.io/tx/${c.tx_hash}`} target="_blank" rel="noopener noreferrer">
+                    <span className="material-symbols-outlined text-[22px]">open_in_new</span>View on Sepolia Etherscan
+                  </a>
+                )}
+                <div className="h-px bg-outline-variant/60 my-1" />
+                <button type="button" className={`${row} text-error`} onClick={run(() => setDeleteTargetCase(c.name))}>
+                  <span className="material-symbols-outlined text-[22px]">delete</span>Delete case
+                </button>
+              </div>
+            );
+          })()}
+        </Sheet>
+
         {/* Data Table */}
-        <div className="bg-surface rounded-2xl shadow-md border border-outline-variant/60 overflow-hidden">
+        <div className="bg-surface rounded-2xl shadow-md border border-outline-variant/60 overflow-hidden max-lg:hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
@@ -725,7 +856,7 @@ export const CasesScreen = () => {
       {/* Verification Result Modal */}
       {verifyModalData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="bg-surface rounded-2xl shadow-2xl border border-outline-variant max-w-lg w-full p-6 animate-scale-in">
+          <div className="bg-surface rounded-2xl shadow-2xl border border-outline-variant max-w-lg w-full p-6 animate-scale-in max-lg:p-4 max-lg:max-h-[calc(100dvh-32px)] max-lg:overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-outline-variant/60">
               <h3 className="font-headline-md text-base font-bold text-on-surface flex items-center gap-2">
                 <span className={`material-symbols-outlined ${verifyModalData.valid ? 'text-[#2e682c]' : 'text-error'} text-[22px]`}>

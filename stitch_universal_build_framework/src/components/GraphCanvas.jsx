@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import * as d3 from 'd3';
 import { useInvestigation } from '../context/InvestigationContext';
+import { useCompact, midTruncate, copyText } from '../utils/useCompact';
+import { Sheet } from './mobile/Sheet';
 
 const EXPLORERS = {
   Ethereum: 'https://etherscan.io',
@@ -27,14 +29,29 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     isLoadingGraph,
     limitedWallets,
     traceScope,
+    riskData,
+    openAddressSheet,
   } = useInvestigation();
   const explorer = EXPLORERS[traceScope?.chain] || EXPLORERS.Ethereum;
 
+  // Phones and tablets: tap instead of hover, details in a bottom sheet
+  const compact = useCompact();
+  const compactRef = useRef(compact);
+  compactRef.current = compact;
+
   const svgRef = useRef(null);
   const containerRef = useRef(null);
+  // The zoom behaviour bound to the SVG, so the +/-/Fit buttons drive the same one
+  const zoomRef = useRef(null);
+  const nodesRef = useRef([]);
+  // Latest callback without rebuilding the graph (a new function each render used to
+  // rebuild the SVG and reset the zoom on every wallet click)
+  const onSelectRef = useRef(onSelectWallet);
+  onSelectRef.current = onSelectWallet;
   const [hoveredNode, setHoveredNode] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [zoomTransform, setZoomTransform] = useState(null);
+  const [selectedEdge, setSelectedEdge] = useState(null);
+  const [legendOpen, setLegendOpen] = useState(false);
 
   // Set of sanctioned addresses
   const sanctionedSet = useMemo(() => {
@@ -180,14 +197,25 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     // Create Main Container for Zoom
     const g = svg.append('g').attr('class', 'main-group');
 
+    // On small screens line labels are hidden when zoomed out (clutter, and the
+    // per-tick label layout is the most expensive step)
+    let labelsHidden = compactRef.current;
+    let placeLabels = () => {};
+
     // Zoom behavior
     const zoom = d3
       .zoom()
       .scaleExtent([0.15, 4])
       .on('zoom', (event) => {
         g.attr('transform', event.transform);
-        setZoomTransform(event.transform);
+        const hide = compactRef.current && event.transform.k < 1.1;
+        if (hide !== labelsHidden) {
+          labelsHidden = hide;
+          linkLabelLayer.attr('display', hide ? 'none' : null);
+          if (!hide) placeLabels();
+        }
       });
+    zoomRef.current = zoom;
 
     svg.call(zoom);
 
@@ -207,6 +235,8 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
       .force('charge', d3.forceManyBody().strength(-380))
       .force('center', d3.forceCenter(0, 0))
       .force('collision', d3.forceCollide().radius(40));
+    // Small screens: settle in about half the ticks (less work on phone CPUs)
+    if (compactRef.current) simulation.alphaDecay(0.05);
 
     // Render Links
     const link = g
@@ -227,6 +257,25 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
         return sanctionedSet.has(tgt.address?.toLowerCase()) ? 'url(#arrowhead-sanctioned)' : 'url(#arrowhead)';
       });
 
+    // Wide invisible lines on small screens so a finger can hit a line
+    const linkHit = compactRef.current
+      ? g
+          .append('g')
+          .attr('class', 'link-hits')
+          .selectAll('line')
+          .data(links)
+          .enter()
+          .append('line')
+          .attr('stroke', 'transparent')
+          .attr('stroke-width', 18)
+          .style('cursor', 'pointer')
+          .on('click', (event, d) => {
+            event.stopPropagation();
+            setSelectedNode(null);
+            setSelectedEdge(d);
+          })
+      : null;
+
     // Hover list of the transactions behind each line
     link.append('title').text((d) =>
       d.txs
@@ -237,7 +286,11 @@ export const GraphCanvas = ({ filterQuery = '', onSelectWallet }) => {
     // Link value labels: a small pill beside each line's midpoint. Drawn above the nodes
     // (raised after they are added) and hidden on lines too short to fit them, so a
     // label never sits on a wallet or its address.
-    const linkLabelLayer = g.append('g').attr('class', 'link-labels').style('pointer-events', 'none');
+    const linkLabelLayer = g
+      .append('g')
+      .attr('class', 'link-labels')
+      .style('pointer-events', 'none')
+      .attr('display', labelsHidden ? 'none' : null);
     const linkText = linkLabelLayer
       .selectAll('g')
       .data(links)
@@ -378,13 +431,15 @@ ${capText}` : d.address));
 
     linkLabelLayer.raise();
 
-    // Interactions
+    // Interactions (hover only with a mouse; touch taps open the bottom sheet)
     node
       .on('mouseenter', (event, d) => {
+        if (compactRef.current) return;
         setHoveredNode(d);
         d3.select(event.currentTarget).select('circle.node-core').attr('stroke', '#ffffff').attr('stroke-width', 3.5);
       })
       .on('mouseleave', (event, d) => {
+        if (compactRef.current) return;
         setHoveredNode(null);
         d3.select(event.currentTarget)
           .select('circle.node-core')
@@ -394,14 +449,19 @@ ${capText}` : d.address));
       .on('click', (event, d) => {
         event.stopPropagation();
         setSelectedNode(d);
-        if (onSelectWallet) {
-          onSelectWallet(d.address);
+        setSelectedEdge(null);
+        if (onSelectRef.current) {
+          onSelectRef.current(d.address);
         }
       });
 
     svg.on('click', () => {
       setSelectedNode(null);
+      setSelectedEdge(null);
     });
+
+    nodesRef.current = nodes;
+    let fitted = false;
 
     // Simulation Tick Updates
     simulation.on('tick', () => {
@@ -410,7 +470,27 @@ ${capText}` : d.address));
         .attr('y1', (d) => d.source.y)
         .attr('x2', (d) => d.target.x)
         .attr('y2', (d) => d.target.y);
+      if (linkHit) {
+        linkHit
+          .attr('x1', (d) => d.source.x)
+          .attr('y1', (d) => d.source.y)
+          .attr('x2', (d) => d.target.x)
+          .attr('y2', (d) => d.target.y);
+      }
 
+      node.attr('transform', (d) => `translate(${d.x},${d.y})`);
+      if (!labelsHidden) placeLabels();
+    });
+
+    // Small screens: frame the whole graph once the layout has settled
+    simulation.on('end', () => {
+      if (compactRef.current && !fitted) {
+        fitted = true;
+        fitToView(0);
+      }
+    });
+
+    placeLabels = () => {
       // Each wallet's circle and address label as boxes, for the edge-label checks below
       const boxes = [];
       nodes.forEach((n) => {
@@ -433,32 +513,46 @@ ${capText}` : d.address));
           .attr('transform', `translate(${cx},${cy})`)
           .attr('display', blocked ? 'none' : null);
       });
-
-      node.attr('transform', (d) => `translate(${d.x},${d.y})`);
-    });
+    };
 
     return () => {
       simulation.stop();
     };
-  }, [nodes, links, sanctionedSet, onSelectWallet, capText]);
+  }, [nodes, links, sanctionedSet, capText, compact]);
 
-  // Zoom Controls
+  // Zoom Controls (use the zoom behaviour bound to the SVG; a fresh d3.zoom() has no
+  // listener, so the view never moved)
   const handleZoom = (scaleFactor) => {
-    if (!svgRef.current) return;
+    if (!svgRef.current || !zoomRef.current) return;
     const svg = d3.select(svgRef.current);
-    svg.transition().duration(300).call(d3.zoom().scaleBy, scaleFactor);
+    svg.transition().duration(300).call(zoomRef.current.scaleBy, scaleFactor);
   };
 
-  const handleResetZoom = () => {
-    if (!svgRef.current || !containerRef.current) return;
+  // Fit every wallet into the view
+  const fitToView = (duration = 400) => {
+    if (!svgRef.current || !containerRef.current || !zoomRef.current) return;
     const width = containerRef.current.clientWidth || 800;
     const height = containerRef.current.clientHeight || 600;
+    const pts = nodesRef.current.filter((n) => Number.isFinite(n.x) && Number.isFinite(n.y));
     const svg = d3.select(svgRef.current);
-    svg
-      .transition()
-      .duration(400)
-      .call(d3.zoom().transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(0.85));
+    let t = d3.zoomIdentity.translate(width / 2, height / 2).scale(0.85);
+    if (pts.length) {
+      const pad = 60;
+      const minX = d3.min(pts, (n) => n.x) - pad;
+      const maxX = d3.max(pts, (n) => n.x) + pad;
+      const minY = d3.min(pts, (n) => n.y) - pad;
+      const maxY = d3.max(pts, (n) => n.y) + pad;
+      const k = Math.max(0.15, Math.min(1.5, Math.min(width / (maxX - minX), height / (maxY - minY))));
+      t = d3.zoomIdentity.translate(width / 2 - (k * (minX + maxX)) / 2, height / 2 - (k * (minY + maxY)) / 2).scale(k);
+    }
+    (duration ? svg.transition().duration(duration) : svg).call(zoomRef.current.transform, t);
   };
+
+  const handleResetZoom = () => fitToView(400);
+
+  // Risk signals and sanctions match for the wallet sheet
+  const riskFor = (address) => riskData.find((r) => r.wallet?.toLowerCase() === address?.toLowerCase()) || null;
+  const sanctionFor = (address) => sanctions.find((s) => s.wallet?.toLowerCase() === address?.toLowerCase()) || null;
 
   return (
     <div ref={containerRef} className="w-full h-full relative bg-inverse-surface overflow-hidden select-none">
@@ -491,33 +585,49 @@ ${capText}` : d.address));
       <svg ref={svgRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
 
       {/* Graph Controls Toolbar */}
-      <div className="absolute bottom-6 right-6 flex items-center gap-1 bg-surface/90 backdrop-blur-md p-1.5 rounded-lg border border-outline-variant shadow-xl z-20">
+      <div className="absolute bottom-6 right-6 flex items-center gap-1 bg-surface/90 backdrop-blur-md p-1.5 rounded-lg border border-outline-variant shadow-xl z-20 max-lg:bottom-3 max-lg:right-3 max-lg:flex-col max-lg:p-1">
         <button
           onClick={() => handleZoom(1.3)}
-          className="p-2 text-on-surface hover:text-primary hover:bg-surface-container rounded transition-colors"
+          className="p-2 text-on-surface hover:text-primary hover:bg-surface-container rounded transition-colors max-lg:flex max-lg:items-center max-lg:justify-center"
           title="Zoom In"
+          aria-label="Zoom in"
         >
           <span className="material-symbols-outlined text-[18px]">add</span>
         </button>
         <button
           onClick={() => handleZoom(0.7)}
-          className="p-2 text-on-surface hover:text-primary hover:bg-surface-container rounded transition-colors"
+          className="p-2 text-on-surface hover:text-primary hover:bg-surface-container rounded transition-colors max-lg:flex max-lg:items-center max-lg:justify-center"
           title="Zoom Out"
+          aria-label="Zoom out"
         >
           <span className="material-symbols-outlined text-[18px]">remove</span>
         </button>
-        <div className="w-[1px] h-4 bg-outline-variant mx-1" />
+        <div className="w-[1px] h-4 bg-outline-variant mx-1 max-lg:w-6 max-lg:h-[1px] max-lg:my-0.5" />
         <button
           onClick={handleResetZoom}
-          className="p-2 text-on-surface hover:text-primary hover:bg-surface-container rounded transition-colors"
+          className="p-2 text-on-surface hover:text-primary hover:bg-surface-container rounded transition-colors max-lg:flex max-lg:items-center max-lg:justify-center"
           title="Fit to Screen"
+          aria-label="Fit graph to screen"
         >
           <span className="material-symbols-outlined text-[18px]">center_focus_strong</span>
         </button>
       </div>
 
+      {/* Small screens: legend behind a chip */}
+      {compact && nodes.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setLegendOpen((v) => !v)}
+          aria-expanded={legendOpen}
+          className="absolute bottom-3 left-3 z-20 flex items-center gap-1.5 px-3 rounded-full bg-surface/95 border border-outline-variant shadow-lg text-xs font-label-caps uppercase font-bold text-on-surface"
+        >
+          <span className="material-symbols-outlined text-[18px]">legend_toggle</span>
+          Legend
+        </button>
+      )}
+
       {/* Legend Overlay */}
-      <div className="absolute bottom-6 left-6 bg-surface/90 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant shadow-xl z-20 flex flex-wrap items-center gap-4 text-xs font-label-caps uppercase text-on-surface">
+      <div className={`absolute bottom-6 left-6 ${compact ? (legendOpen ? 'max-lg:bottom-[60px] max-lg:left-3 max-lg:right-16 max-lg:gap-x-4 max-lg:gap-y-2 max-lg:px-3 max-lg:py-2.5' : 'hidden') : ''} bg-surface/90 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant shadow-xl z-20 flex flex-wrap items-center gap-4 text-xs font-label-caps uppercase text-on-surface`}>
         <div className="flex items-center gap-1.5">
           <div className="w-3 h-3 rounded-full bg-[#1b1c1c] border border-outline-variant" />
           <span>Standard Wallet</span>
@@ -539,7 +649,7 @@ ${capText}` : d.address));
       </div>
 
       {/* Hover Node Tooltip */}
-      {hoveredNode && (
+      {hoveredNode && !compact && (
         <div
           className="absolute top-6 right-6 bg-surface border border-outline-variant rounded-xl p-4 shadow-2xl z-30 max-w-xs animate-in fade-in duration-150"
         >
@@ -575,8 +685,33 @@ ${capText}` : d.address));
         </div>
       )}
 
+      {/* Small screens: wallet or line details in a draggable bottom sheet */}
+      {compact && (
+        <Sheet
+          open={!!(selectedNode || selectedEdge)}
+          onClose={() => {
+            setSelectedNode(null);
+            setSelectedEdge(null);
+          }}
+          title={selectedNode ? (selectedNode.label || 'Wallet') : 'Transactions on this line'}
+          id="graph-detail-sheet"
+        >
+          {selectedNode && (
+            <WalletSheetBody
+              node={selectedNode}
+              explorer={explorer}
+              risk={riskFor(selectedNode.address)}
+              sanction={sanctionFor(selectedNode.address)}
+              capText={capText}
+              onAddress={openAddressSheet}
+            />
+          )}
+          {selectedEdge && <EdgeSheetBody edge={selectedEdge} explorer={explorer} onAddress={openAddressSheet} />}
+        </Sheet>
+      )}
+
       {/* Selected Node Details Drawer */}
-      {selectedNode && !hoveredNode && (
+      {selectedNode && !hoveredNode && !compact && (
         <div className="absolute top-6 right-6 bg-surface border border-outline-variant rounded-xl p-4 shadow-2xl z-30 w-[22rem] max-w-[calc(100%-3rem)]">
           <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-outline-variant">
             <div className="flex items-center gap-1.5">
@@ -654,6 +789,165 @@ ${capText}` : d.address));
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+// Copy button that confirms in place.
+const CopyChip = ({ text, label = 'Copy' }) => {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        if (await copyText(text)) {
+          setDone(true);
+          setTimeout(() => setDone(false), 1500);
+        }
+      }}
+      className="flex-1 rounded-lg border border-outline-variant bg-surface-container text-on-surface font-label-caps text-xs uppercase font-bold flex items-center justify-center gap-1.5"
+    >
+      <span className="material-symbols-outlined text-[18px]">{done ? 'check' : 'content_copy'}</span>
+      {done ? 'Copied' : label}
+    </button>
+  );
+};
+
+// Transactions as tappable rows: date, signed amount, hash (opens the explorer).
+const TxList = ({ txs, explorer, directional = true }) => (
+  <ul className="flex flex-col divide-y divide-outline-variant/40 border border-outline-variant/50 rounded-lg">
+    {txs.map((t, idx) => (
+      <li key={`${t.hash}-${t.direction}-${idx}`} className="flex items-center gap-2 px-2.5 min-h-[48px] text-[13px]">
+        {directional && (
+          <span
+            className={`material-symbols-outlined text-[18px] ${t.direction === 'out' ? 'text-error' : 'text-[#4C8C4A]'}`}
+            aria-label={t.direction === 'out' ? 'Sent' : 'Received'}
+          >
+            {t.direction === 'out' ? 'call_made' : 'call_received'}
+          </span>
+        )}
+        <span className="flex-1 min-w-0">
+          <span className="block font-mono font-semibold text-on-surface">
+            {directional ? (t.direction === 'out' ? '−' : '+') : ''}
+            {formatEth(t.value)}
+            {t.kind === 'internal' && <span className="ml-1 text-[10px] text-on-surface-variant">INT</span>}
+          </span>
+          <span className="block font-mono text-[11px] text-on-surface-variant">{formatDate(t.timestamp)}</span>
+        </span>
+        {t.hash ? (
+          <a
+            href={`${explorer}/tx/${t.hash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="bt-tap flex items-center gap-1 font-mono text-[12px] text-primary px-1"
+            title={t.hash}
+          >
+            {midTruncate(t.hash, 8, 4)}
+            <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+          </a>
+        ) : (
+          <span className="text-on-surface-variant">—</span>
+        )}
+      </li>
+    ))}
+  </ul>
+);
+
+const WalletSheetBody = ({ node, explorer, risk, sanction, capText, onAddress }) => (
+  <div className="flex flex-col gap-3 text-on-surface">
+    <div className="flex items-center gap-2 flex-wrap">
+      {node.isSanctioned && (
+        <span className="bg-error text-white text-[11px] font-bold px-2 py-0.5 rounded-full font-label-caps">SANCTIONED</span>
+      )}
+      {risk && (
+        <span className="bg-primary/10 text-primary border border-primary/30 text-[11px] font-bold px-2 py-0.5 rounded-full font-label-caps uppercase">
+          {risk.tier} · {risk.score} {risk.score === 1 ? 'signal' : 'signals'}
+        </span>
+      )}
+      {node.isCapped && (
+        <span className="bg-[#F2A93B]/15 text-[#9c5a00] border border-[#F2A93B]/50 text-[11px] font-bold px-2 py-0.5 rounded-full font-label-caps">
+          CAP REACHED
+        </span>
+      )}
+    </div>
+    <button
+      type="button"
+      onClick={() => onAddress(node.address, node.label || 'Wallet address')}
+      className="w-full text-left font-mono text-[15px] bg-surface-container rounded-lg px-3 border border-outline-variant flex items-center justify-between gap-2"
+      title={node.address}
+    >
+      <span>{midTruncate(node.address)}</span>
+      <span className="text-[11px] font-sans text-on-surface-variant">Full address</span>
+    </button>
+    <div className="flex gap-2">
+      <CopyChip text={node.address} label="Copy address" />
+      <a
+        href={`${explorer}/address/${node.address}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="bt-tap flex-1 rounded-lg bg-primary text-white font-label-caps text-xs uppercase font-bold flex items-center justify-center gap-1.5"
+      >
+        <span className="material-symbols-outlined text-[18px]">open_in_new</span>
+        Explorer
+      </a>
+    </div>
+    {sanction && (
+      <div className="rounded-lg border border-error/40 bg-error/5 p-3">
+        <p className="font-label-caps text-[11px] uppercase font-bold text-error mb-0.5">Sanctions match</p>
+        <p className="text-sm font-semibold">{sanction.name}</p>
+        <p className="text-xs text-on-surface-variant">Authority: {sanction.authority}</p>
+        {sanction.note && <p className="text-xs text-on-surface-variant italic mt-1">{sanction.note}</p>}
+      </div>
+    )}
+    {node.isCapped && <p className="text-xs text-[#9c5a00] bg-[#F2A93B]/10 border border-[#F2A93B]/40 rounded-lg p-2.5">{capText}</p>}
+    <WalletStats node={node} />
+    <div>
+      <p className="font-label-caps text-[11px] uppercase text-on-surface-variant font-bold mb-1.5">Signals</p>
+      {risk?.signals?.length ? (
+        <div className="flex flex-wrap gap-1.5">
+          {risk.signals.map((s) => (
+            <span key={s} className="text-xs px-2 py-1 rounded bg-surface-container border border-outline-variant/50">{s}</span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-on-surface-variant italic">No heuristic signals on this wallet.</p>
+      )}
+    </div>
+    <div>
+      <p className="font-label-caps text-[11px] uppercase text-on-surface-variant font-bold mb-1.5">
+        Transactions in this graph ({node.txs.length})
+      </p>
+      <TxList txs={node.txs} explorer={explorer} />
+    </div>
+  </div>
+);
+
+const EdgeSheetBody = ({ edge, explorer, onAddress }) => {
+  const from = typeof edge.source === 'object' ? edge.source : { address: edge.source };
+  const to = typeof edge.target === 'object' ? edge.target : { address: edge.target };
+  return (
+    <div className="flex flex-col gap-3 text-on-surface">
+      <div className="grid grid-cols-[auto,1fr] items-center gap-x-2 gap-y-1 text-sm">
+        <span className="text-on-surface-variant text-xs font-label-caps uppercase font-bold">From</span>
+        <button type="button" onClick={() => onAddress(from.address, from.label || 'Sender')} className="text-left font-mono" title={from.address}>
+          {from.label ? `${from.label} · ` : ''}{midTruncate(from.address)}
+        </button>
+        <span className="text-on-surface-variant text-xs font-label-caps uppercase font-bold">To</span>
+        <button type="button" onClick={() => onAddress(to.address, to.label || 'Recipient')} className="text-left font-mono" title={to.address}>
+          {to.label ? `${to.label} · ` : ''}{midTruncate(to.address)}
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="bg-surface-container p-2 rounded">
+          <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Transactions</span>
+          <span className="font-address-md font-bold text-primary">{edge.count}</span>
+        </div>
+        <div className="bg-surface-container p-2 rounded">
+          <span className="text-[10px] text-on-surface-variant block uppercase font-label-caps">Total</span>
+          <span className="font-address-md font-bold text-on-surface">{formatEth(edge.value)}</span>
+        </div>
+      </div>
+      <TxList txs={edge.txs} explorer={explorer} directional={false} />
     </div>
   );
 };

@@ -32,7 +32,7 @@ export const LandingScreen = () => {
   return (
     <div className="w-full min-h-screen bg-surface font-body-md text-on-surface">
       {/* Top Header */}
-      <header className="fixed top-0 w-full z-50 bg-surface/90 backdrop-blur-md shadow-xs border-b border-outline-variant/40">
+      <header className="fixed top-0 w-full z-50 bg-surface/90 backdrop-blur-md shadow-xs border-b border-outline-variant/40 max-lg:pt-[env(safe-area-inset-top)]">
         <div className="h-20 max-w-7xl mx-auto px-lg flex items-center justify-between">
           <div className="flex items-center gap-md cursor-pointer" onClick={() => setActiveTab('landing')}>
             <div className="w-9 h-9 rounded-lg bg-primary-container flex items-center justify-center text-white shadow-md">
@@ -44,13 +44,13 @@ export const LandingScreen = () => {
           </div>
 
           <nav className="hidden md:flex items-center gap-xl">
-            <a href="#problem" className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors uppercase">
+            <a href="#problem" className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors uppercase max-lg:py-3 max-lg:inline-block">
               Product
             </a>
-            <a href="#how-it-works" className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors uppercase">
+            <a href="#how-it-works" className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors uppercase max-lg:py-3 max-lg:inline-block">
               How it Works
             </a>
-            <a href="#verified-cases" className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors uppercase">
+            <a href="#verified-cases" className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors uppercase max-lg:py-3 max-lg:inline-block">
               Verified Cases
             </a>
           </nav>
@@ -130,7 +130,7 @@ export const LandingScreen = () => {
                   </span>
                   <span className="material-symbols-outlined text-outline">code</span>
                 </div>
-                <div className="font-address-md text-xs text-on-surface-variant/80 flex flex-col gap-2 font-mono">
+                <div className="font-address-md text-xs text-on-surface-variant/80 flex flex-col gap-2 font-mono max-lg:break-all">
                   <div className="p-2.5 bg-surface-container-low rounded">Tx: 0x8f7a9c3e2b1d0f5c8a6e4d7b2a9f1c3e5d7b9a2c1f4e6d8b0a2c4e6f8a0b2d4</div>
                   <div className="p-2.5 bg-surface-container-low rounded">From: 0x098B716B8Aaf21512996dC57EB0615e2383E2f96</div>
                   <div className="p-2.5 bg-surface-container-low rounded">To: 0x9D2a7C89d7A3b879C512b9148c7A512d7c9a8b1F</div>

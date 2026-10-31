@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { verifyReport, getErrorMessage } from '../api/client';
 import { useInvestigation } from '../context/InvestigationContext';
+import { useCompact } from '../utils/useCompact';
 
 export const VerifyReportScreen = () => {
   const { showToast } = useInvestigation();
@@ -13,6 +14,17 @@ export const VerifyReportScreen = () => {
   const [copiedKey, setCopiedKey] = useState(null);
 
   const fileInputRef = useRef(null);
+
+  // Phones/tablets: the result goes on top; hashes and provenance fold away
+  const compact = useCompact();
+  const resultRef = useRef(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  useEffect(() => {
+    if (compact && (result || isLoading)) {
+      setDetailsOpen(false);
+      resultRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  }, [result, isLoading, compact]);
 
   const handleCopy = (text, key) => {
     if (!text) return;
@@ -104,7 +116,7 @@ export const VerifyReportScreen = () => {
   };
 
   return (
-    <div className="flex-1 w-full max-w-7xl mx-auto px-6 py-8">
+    <div className="flex-1 w-full max-w-7xl mx-auto px-6 py-8 max-lg:px-4 max-lg:py-4">
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -112,7 +124,7 @@ export const VerifyReportScreen = () => {
             <span className="material-symbols-outlined text-[24px]">verified</span>
           </div>
           <div>
-            <h1 className="font-headline-md text-2xl font-bold tracking-tight text-on-surface uppercase">
+            <h1 className="font-headline-md text-2xl font-bold tracking-tight text-on-surface uppercase max-lg:text-xl">
               Verify Investigation Report
             </h1>
             <p className="text-xs text-on-surface-variant font-medium">
@@ -124,7 +136,7 @@ export const VerifyReportScreen = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Verification Form (Left Column) */}
-        <div className="lg:col-span-5 space-y-6">
+        <div className={`lg:col-span-5 space-y-6 ${result || isLoading ? 'max-lg:order-2' : ''}`}>
           <form onSubmit={handleVerify} className="bg-surface-container-lowest border border-outline-variant/60 rounded-2xl p-6 shadow-sm space-y-5">
             <div className="flex items-center justify-between border-b border-outline-variant/30 pb-3">
               <span className="font-label-caps text-xs font-bold uppercase tracking-wider text-on-surface">
@@ -162,6 +174,15 @@ export const VerifyReportScreen = () => {
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onClick={() => fileInputRef.current?.click()}
+                role="button"
+                tabIndex={0}
+                aria-label={file ? `Selected ${file.name}. Choose another PDF` : 'Choose a PDF report'}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
                 className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-2 ${
                   isDragOver
                     ? 'border-primary bg-primary/5 scale-[0.99]'
@@ -264,9 +285,9 @@ export const VerifyReportScreen = () => {
         </div>
 
         {/* Verification Result Display (Right Column) */}
-        <div className="lg:col-span-7">
+        <div ref={resultRef} className={`lg:col-span-7 max-lg:scroll-mt-[calc(var(--bt-mtop)+8px)] ${result || isLoading ? 'max-lg:order-1' : ''}`}>
           {!result && !isLoading && (
-            <div className="h-full min-h-[420px] bg-surface-container-lowest border border-dashed border-outline-variant rounded-2xl p-8 flex flex-col items-center justify-center text-center">
+            <div className="h-full min-h-[420px] bg-surface-container-lowest border border-dashed border-outline-variant rounded-2xl p-8 flex flex-col items-center justify-center text-center max-lg:min-h-0 max-lg:p-6">
               <div className="w-16 h-16 rounded-2xl bg-surface-container flex items-center justify-center text-on-surface-variant/60 mb-3">
                 <span className="material-symbols-outlined text-[36px]">shield_with_heart</span>
               </div>
@@ -280,7 +301,7 @@ export const VerifyReportScreen = () => {
           )}
 
           {isLoading && (
-            <div className="h-full min-h-[420px] bg-surface-container-lowest border border-outline-variant/60 rounded-2xl p-8 flex flex-col items-center justify-center text-center">
+            <div className="h-full min-h-[420px] bg-surface-container-lowest border border-outline-variant/60 rounded-2xl p-8 flex flex-col items-center justify-center text-center max-lg:min-h-0 max-lg:p-6">
               <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center text-primary mb-4 animate-pulse">
                 <span className="material-symbols-outlined text-[36px] animate-spin">sync</span>
               </div>
@@ -298,8 +319,8 @@ export const VerifyReportScreen = () => {
               {/* Status Header Banner */}
               {result.status === 'authentic' && (
                 <div className="bg-[#e8f5e9] border border-[#a5d6a7] rounded-xl p-4 text-[#1b5e20]">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#2e7d32] text-white flex items-center gap-1.5 shadow-xs">
+                  <div className="flex items-center justify-between mb-2 max-lg:flex-wrap max-lg:gap-x-3 max-lg:gap-y-1.5 max-lg:mb-3">
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#2e7d32] text-white flex items-center gap-1.5 shadow-xs max-lg:text-base max-lg:px-3.5 max-lg:py-2">
                       <span className="material-symbols-outlined text-[15px]">verified</span>
                       AUTHENTIC
                     </span>
@@ -316,8 +337,8 @@ export const VerifyReportScreen = () => {
 
               {result.status === 'tampered' && (
                 <div className="bg-[#ffebee] border border-[#ef9a9a] rounded-xl p-4 text-[#b71c1c]">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#c62828] text-white flex items-center gap-1.5 shadow-xs">
+                  <div className="flex items-center justify-between mb-2 max-lg:flex-wrap max-lg:gap-x-3 max-lg:gap-y-1.5 max-lg:mb-3">
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#c62828] text-white flex items-center gap-1.5 shadow-xs max-lg:text-base max-lg:px-3.5 max-lg:py-2">
                       <span className="material-symbols-outlined text-[15px]">gpp_bad</span>
                       TAMPERED
                     </span>
@@ -334,8 +355,8 @@ export const VerifyReportScreen = () => {
 
               {result.status === 'not_found' && (
                 <div className="bg-[#fff8e1] border border-[#ffe082] rounded-xl p-4 text-[#e65100]">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#f57f17] text-white flex items-center gap-1.5 shadow-xs">
+                  <div className="flex items-center justify-between mb-2 max-lg:flex-wrap max-lg:gap-x-3 max-lg:gap-y-1.5 max-lg:mb-3">
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#f57f17] text-white flex items-center gap-1.5 shadow-xs max-lg:text-base max-lg:px-3.5 max-lg:py-2">
                       <span className="material-symbols-outlined text-[15px]">search_off</span>
                       NOT FOUND
                     </span>
@@ -352,8 +373,8 @@ export const VerifyReportScreen = () => {
 
               {result.status === 'unavailable' && (
                 <div className="bg-[#eceff1] border border-[#b0bec5] rounded-xl p-4 text-[#37474f]">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#546e7a] text-white flex items-center gap-1.5 shadow-xs">
+                  <div className="flex items-center justify-between mb-2 max-lg:flex-wrap max-lg:gap-x-3 max-lg:gap-y-1.5 max-lg:mb-3">
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider bg-[#546e7a] text-white flex items-center gap-1.5 shadow-xs max-lg:text-base max-lg:px-3.5 max-lg:py-2">
                       <span className="material-symbols-outlined text-[15px]">cloud_off</span>
                       UNAVAILABLE
                     </span>
@@ -368,8 +389,22 @@ export const VerifyReportScreen = () => {
                 </div>
               )}
 
+              {/* Small screens: hashes and provenance are collapsible */}
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((v) => !v)}
+                aria-expanded={detailsOpen}
+                className="lg:hidden w-full flex items-center justify-between gap-2 px-3 rounded-xl border border-outline-variant bg-surface-container text-sm font-semibold text-on-surface"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-primary">fingerprint</span>
+                  Hashes &amp; on-chain details
+                </span>
+                <span className="material-symbols-outlined text-[20px]">{detailsOpen ? 'expand_less' : 'expand_more'}</span>
+              </button>
+
               {/* SHA-256 Checksums Comparison Card */}
-              <div className="bg-surface-container rounded-xl p-4 border border-outline-variant/40 space-y-3">
+              <div className={`bg-surface-container rounded-xl p-4 border border-outline-variant/40 space-y-3 ${detailsOpen ? '' : 'max-lg:hidden'}`}>
                 <span className="font-label-caps text-xs font-bold uppercase tracking-wider text-on-surface block">
                   Cryptographic Fingerprints (SHA-256)
                 </span>
@@ -422,7 +457,7 @@ export const VerifyReportScreen = () => {
               </div>
 
               {/* Provenance & On-Chain Metadata Table */}
-              <div className="space-y-3">
+              <div className={`space-y-3 ${detailsOpen ? '' : 'max-lg:hidden'}`}>
                 <span className="font-label-caps text-xs font-bold uppercase tracking-wider text-on-surface block">
                   On-Chain Provenance &amp; Storage Details
                 </span>
