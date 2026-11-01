@@ -27,6 +27,7 @@
 |----------------|---------------------------------------------------|
 | Type           | Web Service                                       |
 | Environment    | Python                                            |
+| Root Directory | `Backend`                                         |
 | Build Command  | `pip install -r requirements.txt`                 |
 | Start Command  | `uvicorn api:app --host 0.0.0.0 --port $PORT`    |
 | Health Check   | `/health`                                         |
@@ -74,7 +75,7 @@ This means:
 
 ### Python Version
 
-Render uses `runtime.txt` to determine the Python version. The file is set to
+Render uses `Backend/runtime.txt` to determine the Python version. The file is set to
 `python-3.12.8`. Your local machine may use Python 3.14, but Render only supports
 up to 3.12/3.13.
 
@@ -84,7 +85,7 @@ up to 3.12/3.13.
 
 ### Configuration
 
-1. Connect the `stitch_universal_build_framework` directory to Vercel
+1. Connect the repository to Vercel with **Root Directory** set to `Frontend`
 2. Set the environment variable:
 
 | Variable              | Value                                          |
@@ -151,12 +152,12 @@ curl.exe -s -o NUL -w "%{http_code}" https://blocktrace-v2.vercel.app/privacy
 
 ## Refreshing the OFAC sanctions list
 
-The backend screens addresses against `data/sanctions_ofac.json`, a committed snapshot of the
+The backend screens addresses against `Backend/data/sanctions_ofac.json`, a committed snapshot of the
 OFAC SDN list, so Render needs no network access to OFAC at startup. To update it:
 
 ```bash
-python scripts/update_sanctions.py
+python Backend/scripts/update_sanctions.py
 ```
 
-Then commit `data/sanctions_ofac.json` and push; Render redeploys with the new snapshot.
+Then commit `Backend/data/sanctions_ofac.json` and push; Render redeploys with the new snapshot.
 `/sanctions/check` reports the snapshot's `list_publication_date`, `fetched_at` and `count`.

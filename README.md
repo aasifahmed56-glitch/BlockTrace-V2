@@ -14,7 +14,7 @@ BlockTrace is a full-stack, tamper-evident blockchain forensic intelligence and 
   - *Dispersal / Fan-Out*: High-frequency rapid distribution of funds to multiple fresh or burner wallets.
   - *Layering & Cycles*: Circular fund routing designed to obfuscate origin and artificially inflate transaction counts.
   - *Mixer & Bridge Touchpoints*: Direct and indirect hops to known mixers (e.g., Tornado Cash) and cross-chain bridges.
-- **OFAC Sanctions Screening**: Case-insensitive screening of every discovered address against a dated snapshot of the U.S. Treasury OFAC SDN list (all EVM `0x` addresses, treated as sanctioned on Ethereum, BNB Chain and Polygon alike), plus a few hand-annotated entries such as the Lazarus Group's Ronin exploiter. The snapshot lives in `data/sanctions_ofac.json`; its publication date and size are shown in the UI, the PDF dossier and `/sanctions/check`. It is not a live feed — see [Refreshing the OFAC sanctions list](#refreshing-the-ofac-sanctions-list).
+- **OFAC Sanctions Screening**: Case-insensitive screening of every discovered address against a dated snapshot of the U.S. Treasury OFAC SDN list (all EVM `0x` addresses, treated as sanctioned on Ethereum, BNB Chain and Polygon alike), plus a few hand-annotated entries such as the Lazarus Group's Ronin exploiter. The snapshot lives in `Backend/data/sanctions_ofac.json`; its publication date and size are shown in the UI, the PDF dossier and `/sanctions/check`. It is not a live feed — see [Refreshing the OFAC sanctions list](#refreshing-the-ofac-sanctions-list).
 - **Date-Scoped Traces**: Each wallet contributes at most *Tx / Wallet* transactions (default 15) to a trace, so a trace is a sample, not the full history. Set a *From / To date* window around the incident and choose *Oldest first* to see the earliest activity in that window. The scope (dates, order, cap, hops, chain) is shown above the graph, saved with each case and printed in the PDF dossier, and wallets that hit the cap are marked.
 - **Cryptographic Findings Certificates**: Deterministic, structured findings metadata signed and digested using SHA-256 to guarantee analytical repeatability.
 - **Audit-Ready PDF Dossier Reports**: Vector-rendered PDF forensic reports containing executive summaries, high-risk wallet catalogs, and forensic heuristic breakdowns.
@@ -32,14 +32,14 @@ BlockTrace bridges local off-chain investigations with the immutability of publi
    - The FastAPI backend compiles tamper-evident investigation dossiers into standardized PDF documents.
    - Computes a deterministic SHA-256 fingerprint (`investigation_hash`) of the findings and binary payload.
    - Pins the report PDF to IPFS via Pinata, returning an immutable Content Identifier (CID).
-   - Anchors the tuple `(bytes32 investigationHash, string ipfsCID, address submitter, uint256 timestamp)` onto the Ethereum Sepolia testnet via the [`BlockTraceRegistry`](contracts/BlockTraceRegistry.sol) smart contract.
+   - Anchors the tuple `(bytes32 investigationHash, string ipfsCID, address submitter, uint256 timestamp)` onto the Ethereum Sepolia testnet via the [`BlockTraceRegistry`](Backend/contracts/BlockTraceRegistry.sol) smart contract.
 
 2. **Server-Side Encrypted Case Anchoring**:
    - Allows investigators to archive entire active investigation sessions (graph topology, node classifications, sanctions hits, investigator notes).
    - Computes a plain SHA-256 hash over the canonical JSON snapshot to serve as the public on-chain fingerprint.
    - Performs server-side encryption by the FastAPI backend before IPFS upload (AES-256-GCM, HKDF per-case key) with authenticated associated data (AAD) bound to the case number.
    - Uploads the encrypted envelope (`<case_number>.enc`) to Pinata IPFS as `application/octet-stream`.
-   - Records the state on Sepolia via [`BlockTraceCaseRegistry`](contracts/BlockTraceCaseRegistry.sol), storing `keccak256(case_number)` for privacy alongside the plaintext hash and IPFS CID.
+   - Records the state on Sepolia via [`BlockTraceCaseRegistry`](Backend/contracts/BlockTraceCaseRegistry.sol), storing `keccak256(case_number)` for privacy alongside the plaintext hash and IPFS CID.
    - Supports multi-version anchoring (`v1`, `v2`, etc.) when an active investigation is updated.
 
 3. **Public Independent "Verify Report" Portal**:
@@ -160,15 +160,15 @@ python -m venv venv
 python3 -m venv venv
 source venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (the backend lives in Backend/)
+pip install -r Backend/requirements.txt
 ```
 
 ---
 
 ### Step 3: Install Frontend Dependencies
 ```bash
-cd stitch_universal_build_framework
+cd Frontend
 npm install
 cd ..
 ```
@@ -178,16 +178,16 @@ cd ..
 ### Step 4: Generate Master Encryption Key
 Generate a 256-bit base64 master key for server-side case snapshot encryption:
 ```bash
-python generate_key.py
+python Backend/generate_key.py
 ```
 Copy the printed `CASE_ENCRYPTION_KEY=...` line into your `.env` file.
 
 ---
 
 ### Step 5: Configure Environment Variables (`.env`)
-Create a `.env` file in the project root by copying `.env.example`:
+Create a `.env` file in the `Backend` folder by copying `Backend/.env.example`:
 ```bash
-cp .env.example .env
+cp Backend/.env.example Backend/.env
 ```
 Fill in the following variables:
 
@@ -204,14 +204,14 @@ Fill in the following variables:
 | `CONTRACT_ADDRESS` | Deployed address of the `BlockTraceRegistry` smart contract on Sepolia. |
 | `CASE_CONTRACT_ADDRESS` | Deployed address of the `BlockTraceCaseRegistry` smart contract on Sepolia. |
 | `WALLET_PRIVATE_KEY` | Hex-encoded private key of the Sepolia deployer/submitter wallet (accepted both with or without the leading `0x` prefix). |
-| `CASE_ENCRYPTION_KEY` | Base64-encoded 32-byte AES-256 master key generated via `python generate_key.py`. |
+| `CASE_ENCRYPTION_KEY` | Base64-encoded 32-byte AES-256 master key generated via `python Backend/generate_key.py`. |
 
 ---
 
 ### Step 6: Deploy Smart Contracts to Sepolia
 
 1. Open [Remix Ethereum IDE](https://remix.ethereum.org).
-2. Create `BlockTraceRegistry.sol` and paste code from [`contracts/BlockTraceRegistry.sol`](contracts/BlockTraceRegistry.sol).
+2. Create `BlockTraceRegistry.sol` and paste code from [`Backend/contracts/BlockTraceRegistry.sol`](Backend/contracts/BlockTraceRegistry.sol).
 3. In the Remix **Solidity Compiler** tab:
    - Choose compiler version: **`0.8.34`**
    - Optimization: **OFF** (disabled, default 200 runs)
@@ -221,7 +221,7 @@ Fill in the following variables:
    - Connect your Sepolia account (ensure it has testnet ETH)
    - Click **Deploy** and confirm the transaction in MetaMask
 5. Copy the deployed contract address and paste into `.env` as `CONTRACT_ADDRESS`.
-6. Repeat the process for [`contracts/BlockTraceCaseRegistry.sol`](contracts/BlockTraceCaseRegistry.sol) (compiler `0.8.34`, optimization **OFF**) and paste its address as `CASE_CONTRACT_ADDRESS`.
+6. Repeat the process for [`Backend/contracts/BlockTraceCaseRegistry.sol`](Backend/contracts/BlockTraceCaseRegistry.sol) (compiler `0.8.34`, optimization **OFF**) and paste its address as `CASE_CONTRACT_ADDRESS`.
 7. *(Optional)* Verify contract source code on Sepolia Etherscan:
    - Compiler Type: **Solidity (Single file)**
    - Compiler Version: **`v0.8.34`**
@@ -234,14 +234,15 @@ Fill in the following variables:
 
 **Terminal 1 — FastAPI Backend**:
 ```bash
-# In project root with venv activated
+# From the Backend folder, with the venv activated
+cd Backend
 python -m uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 Backend API will be live at `http://127.0.0.1:8000` (interactive OpenAPI docs at `http://127.0.0.1:8000/docs`).
 
 **Terminal 2 — React / Vite Frontend**:
 ```bash
-cd stitch_universal_build_framework
+cd Frontend
 npm run dev
 ```
 Frontend interface will be live at `http://localhost:5173`.
@@ -252,22 +253,20 @@ Frontend interface will be live at `http://localhost:5173`.
 
 | Path | What it holds |
 |---|---|
-| `api.py`, `logic.py`, `*_service.py`, ... (root) | FastAPI backend. Render runs `uvicorn api:app` from the repo root, so these stay at the top level. |
-| `stitch_universal_build_framework/` | React + Vite frontend (Vercel's root directory). |
-| `desktop/` | Windows app (pywebview shell) and the Microsoft Store MSIX packaging. |
+| `Backend/` | FastAPI backend (`api.py`, `logic.py`, `*_service.py`, ...), `requirements.txt`, the Sepolia `contracts/`, the OFAC snapshot in `data/`, `scripts/` and the `tests/` suite. Render's root directory. |
+| `Frontend/` | React + Vite web app. Vercel's root directory. |
+| `desktop/` | Windows app (pywebview shell) and the Microsoft Store MSIX packaging; bundles a build of `Frontend/`. |
 | `extension/` | Browser extension (report verifier). |
-| `contracts/` | Sepolia smart contracts and ABIs. |
-| `data/`, `scripts/` | OFAC sanctions snapshot and the script that refreshes it. |
-| `tests/` | Python test suite (`tests/test_fixtures/` holds sample data). |
 | `docs/` | [Deployment](docs/DEPLOYMENT.md), [demo script](docs/DEMO_SCRIPT.md), [integration brief](docs/INTEGRATION_BRIEF.md), sample PDF reports and the original UI design mock-ups. |
 
 ### Running the tests
 
 ```bash
+cd Backend
 pytest -q --ignore=tests/test_publish.py --ignore=tests/test_case_registry.py
 ```
 
-The two ignored files make real Sepolia and Pinata writes; run them on purpose with `python -m tests.test_publish both`.
+The two ignored files make real Sepolia and Pinata writes; run them on purpose from `Backend/` with `python -m tests.test_publish both`.
 
 ---
 
@@ -307,7 +306,7 @@ The two ignored files make real Sepolia and Pinata writes; run them on purpose w
 
 ### 3. Missing Dependencies (`web3`, `python-multipart`, `cryptography`)
 - **Symptom**: `ModuleNotFoundError: No module named 'web3'` or `No module named 'cryptography'` or `multipart/form-data requires python-multipart`.
-- **Fix**: Re-run `pip install -r requirements.txt` inside your active virtual environment.
+- **Fix**: Re-run `pip install -r Backend/requirements.txt` inside your active virtual environment.
 
 ### 4. Pinata Dedicated Gateway Configuration & Download Handling
 - **Symptom**: Direct requests to `gateway.pinata.cloud` fail with 403 Forbidden or 405 Method Not Allowed.
@@ -324,7 +323,7 @@ The two ignored files make real Sepolia and Pinata writes; run them on purpose w
 ### 6. `CASE_ENCRYPTION_KEY` Not Set
 - **Symptom**: Anchoring fails with `CASE_ENCRYPTION_KEY is not set in .env`.
 - **Cause**: The master AES key has not been generated or added to `.env`.
-- **Fix**: Run `python generate_key.py`, copy the output, paste into `.env`, and restart the backend. BlockTrace intentionally blocks anchoring rather than uploading unencrypted snapshots.
+- **Fix**: Run `python Backend/generate_key.py`, copy the output, paste into `.env`, and restart the backend. BlockTrace intentionally blocks anchoring rather than uploading unencrypted snapshots.
 
 ---
 
@@ -337,13 +336,13 @@ The two ignored files make real Sepolia and Pinata writes; run them on purpose w
 
 ## Refreshing the OFAC sanctions list
 
-`data/sanctions_ofac.json` is generated from the official SDN list published by the
+`Backend/data/sanctions_ofac.json` is generated from the official SDN list published by the
 U.S. Treasury OFAC Sanctions List Service
 (`https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML`).
 The backend reads this committed snapshot at startup and never downloads the list itself.
 
 ```bash
-python scripts/update_sanctions.py
+python Backend/scripts/update_sanctions.py
 ```
 
 The script rebuilds the snapshot from scratch, so delisted addresses (such as the Tornado Cash
