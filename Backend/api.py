@@ -14,6 +14,7 @@ Interactive API docs (auto-generated) are then available at:
 """
 
 import os
+import math
 import time
 import hashlib
 import json as jsonlib
@@ -245,14 +246,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS: use CORS_ORIGINS env in public mode, allow all in local dev.
-_cors_origins = CORS_ORIGINS + ALLOW_EXT_ORIGINS if PUBLIC_MODE else ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 app.add_middleware(workspace.WorkspaceMiddleware)
 app.add_middleware(view_options.ViewOptionsMiddleware)
 graph_queries.counted_kinds_resolver = _counted_kinds
@@ -274,15 +267,24 @@ def _prepare_workspaces():
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    """Integer setting from the environment; falls back to the default if unset or invalid."""
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
 _rate_limit_store: dict = defaultdict(list)
 _rate_limit_lock = Lock()
-RATE_LIMIT = 120  # max requests (loading one case fires ~12 API calls)
+RATE_LIMIT = _env_int("RATE_LIMIT", 120)  # max requests (loading one case fires ~12 API calls)
 RATE_WINDOW = 60  # per this many seconds
 
 # Endpoints that spend the server wallet's Sepolia gas and Pinata storage get a much
 # tighter budget, so nobody can drain the wallet now that the API is open to everyone.
-ONCHAIN_RATE_LIMIT = 5
-ONCHAIN_RATE_WINDOW = 3600
+ONCHAIN_RATE_LIMIT = _env_int("ONCHAIN_RATE_LIMIT", 5)
+ONCHAIN_RATE_WINDOW = _env_int("ONCHAIN_RATE_WINDOW", 3600, minimum=1)
 _ONCHAIN_PATH = re_module.compile(r"^(/api)?/(report/publish|cases/[^/]+/(anchor|reanchor))$")
 
 
@@ -296,6 +298,27 @@ def _check_rate_limit(key: str, limit: int = RATE_LIMIT, window: int = RATE_WIND
             return False
         timestamps.append(now)
         return True
+
+
+def _retry_after(key: str, window: int) -> int:
+    """Seconds until the oldest request in this bucket leaves the window (a slot frees up)."""
+    with _rate_limit_lock:
+        timestamps = _rate_limit_store.get(key) or []
+        if not timestamps:
+            return window
+        return max(1, math.ceil(window - (time.time() - timestamps[0])))
+
+
+def _describe_window(seconds: int) -> str:
+    if seconds == 3600:
+        return "hour"
+    if seconds == 60:
+        return "minute"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600} hours"
+    if seconds % 60 == 0:
+        return f"{seconds // 60} minutes"
+    return f"{seconds} seconds"
 
 
 def _client_ip(request: Request) -> str:
@@ -316,19 +339,47 @@ def _client_ip(request: Request) -> str:
 async def rate_limit_middleware(request: Request, call_next):
     if PUBLIC_MODE and request.method != "OPTIONS" and request.url.path != "/health":
         ip = _client_ip(request)
-        allowed = _check_rate_limit(ip)
-        retry_after = RATE_WINDOW
+        key, limit, window, scope = ip, RATE_LIMIT, RATE_WINDOW, "general"
+        allowed = _check_rate_limit(key, limit, window)
         if allowed and request.method == "POST" and _ONCHAIN_PATH.match(request.url.path):
-            allowed = _check_rate_limit(f"onchain:{ip}", ONCHAIN_RATE_LIMIT, ONCHAIN_RATE_WINDOW)
-            retry_after = ONCHAIN_RATE_WINDOW
+            key, limit, window, scope = f"onchain:{ip}", ONCHAIN_RATE_LIMIT, ONCHAIN_RATE_WINDOW, "onchain"
+            allowed = _check_rate_limit(key, limit, window)
         if not allowed:
+            retry_after = _retry_after(key, window)
+            if scope == "onchain":
+                detail = (f"Too many requests: publishing and anchoring are limited to "
+                          f"{limit} per {_describe_window(window)}.")
+            else:
+                detail = "Too many requests. Please wait before retrying."
             return JSONResponse(
                 status_code=429,
-                content={"detail": "Too many requests. Please wait before retrying."},
+                content={"detail": detail, "scope": scope, "limit": limit,
+                         "window": window, "retry_after": retry_after},
                 headers={"Retry-After": str(retry_after)},
             )
-    response = await call_next(request)
-    return response
+    try:
+        return await call_next(request)
+    except Exception:
+        if not PUBLIC_MODE:
+            raise
+        # Answer here, inside CORSMiddleware, so the browser can read the 500
+        # (Starlette's own error handler sits outside every middleware).
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": "An internal error occurred."})
+
+
+# CORS is added last so it is the outermost middleware: every response, including the
+# 429s and 500s above, carries the CORS headers, and the frontend can read Retry-After.
+# Public mode uses the CORS_ORIGINS env; local dev allows all origins.
+_cors_origins = CORS_ORIGINS + ALLOW_EXT_ORIGINS if PUBLIC_MODE else ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Retry-After"],
+)
 
 
 # ==================== Generic error handler (suppress stack traces in public mode) ====================

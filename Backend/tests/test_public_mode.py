@@ -204,3 +204,118 @@ class TestOnchainRateLimit:
         assert not mod._ONCHAIN_PATH.match("/report")
         assert not mod._ONCHAIN_PATH.match("/report/verify")
         assert not mod._ONCHAIN_PATH.match("/cases/BT-2026-0001/verify")
+
+
+# ============================================================
+# 7. Error responses carry CORS headers (the browser can read them)
+# ============================================================
+
+ORIGIN = "https://blocktrace-v2.vercel.app"
+
+
+def _allows(resp):
+    return resp.headers.get("access-control-allow-origin") in ("*", ORIGIN)
+
+
+class TestCorsOnErrors:
+    def test_cors_is_outermost_middleware(self):
+        _, mod = _make_app(public_mode=True)
+        assert mod.app.user_middleware[0].cls.__name__ == "CORSMiddleware"
+
+    def test_general_429_has_cors_headers(self):
+        client, mod = _make_app(public_mode=True)
+        for _ in range(mod.RATE_LIMIT):
+            client.get("/contracts", headers={"Origin": ORIGIN})
+        resp = client.get("/contracts", headers={"Origin": ORIGIN})
+        assert resp.status_code == 429
+        assert _allows(resp)
+        assert "retry-after" in resp.headers.get("access-control-expose-headers", "").lower()
+        body = resp.json()
+        assert body["scope"] == "general"
+        assert body["limit"] == mod.RATE_LIMIT
+        assert int(resp.headers["Retry-After"]) == body["retry_after"]
+
+    def test_onchain_429_has_cors_headers(self):
+        client, mod = _make_app(public_mode=True)
+        original = mod.ONCHAIN_RATE_LIMIT
+        mod.ONCHAIN_RATE_LIMIT = 0
+        try:
+            resp = client.post("/report/publish", json={}, headers={"Origin": ORIGIN})
+        finally:
+            mod.ONCHAIN_RATE_LIMIT = original
+        assert resp.status_code == 429
+        assert _allows(resp)
+        body = resp.json()
+        assert body["scope"] == "onchain"
+        assert body["limit"] == 0 and body["window"] == mod.ONCHAIN_RATE_WINDOW
+        assert "per hour" in body["detail"]
+
+    def test_retry_after_counts_down_to_the_next_free_slot(self):
+        client, mod = _make_app(public_mode=True)
+        original = mod.ONCHAIN_RATE_LIMIT
+        mod.ONCHAIN_RATE_LIMIT = 1
+        # One publish 10 minutes ago used up this client's budget for the hour
+        mod._rate_limit_store["onchain:9.9.9.9"] = [mod.time.time() - 600]
+        try:
+            resp = client.post("/report/publish", json={},
+                               headers={"Origin": ORIGIN, "CF-Connecting-IP": "9.9.9.9"})
+        finally:
+            mod.ONCHAIN_RATE_LIMIT = original
+        assert resp.status_code == 429
+        assert 2990 <= int(resp.headers["Retry-After"]) <= 3000
+
+    def test_500_in_public_mode_has_cors_headers(self):
+        from fastapi.testclient import TestClient
+        _, mod = _make_app(public_mode=True)
+
+        def boom():
+            raise RuntimeError("boom")
+
+        path = "/__test_internal_error"
+        if not any(getattr(r, "path", None) == path for r in mod.app.router.routes):
+            mod.app.add_api_route(path, boom)
+        client = TestClient(mod.app, raise_server_exceptions=False)
+        resp = client.get(path, headers={"Origin": ORIGIN})
+        assert resp.status_code == 500
+        assert _allows(resp)
+        assert resp.json() == {"detail": "An internal error occurred."}
+
+    def test_preflight_for_publish_is_answered(self):
+        client, _ = _make_app(public_mode=True)
+        resp = client.options("/report/publish", headers={
+            "Origin": ORIGIN,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,x-workspace-id",
+        })
+        assert resp.status_code == 200
+        assert _allows(resp)
+
+
+# ============================================================
+# 8. Limits come from the environment
+# ============================================================
+
+class TestRateLimitSettings:
+    def test_env_values_are_read(self, monkeypatch):
+        import api as api_module
+        monkeypatch.setenv("ONCHAIN_RATE_LIMIT", "12")
+        assert api_module._env_int("ONCHAIN_RATE_LIMIT", 5) == 12
+
+    @pytest.mark.parametrize("raw", ["", "abc", "-3"])
+    def test_invalid_values_fall_back_to_default(self, monkeypatch, raw):
+        import api as api_module
+        monkeypatch.setenv("RATE_LIMIT", raw)
+        assert api_module._env_int("RATE_LIMIT", 120) == 120
+
+    def test_window_must_be_positive(self, monkeypatch):
+        import api as api_module
+        monkeypatch.setenv("ONCHAIN_RATE_WINDOW", "0")
+        assert api_module._env_int("ONCHAIN_RATE_WINDOW", 3600, minimum=1) == 3600
+
+    def test_defaults(self):
+        import api as api_module
+        assert api_module.RATE_WINDOW == 60
+        for name, default in (("RATE_LIMIT", 120), ("ONCHAIN_RATE_LIMIT", 5), ("ONCHAIN_RATE_WINDOW", 3600)):
+            import os
+            if name not in os.environ:
+                assert getattr(api_module, name) == default
