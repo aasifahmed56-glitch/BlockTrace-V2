@@ -64,6 +64,16 @@ Set these in Render's Environment tab (values are secrets — names only listed 
 > fast the Sepolia wallet and Pinata quota can be spent. Leave them unset for a host
 > without on-chain features. `ACCESS_CODE` is no longer used and can be deleted from Render.
 
+#### Optional (rate limits, public mode only)
+| Variable              | Default | Description                                                        |
+|-----------------------|---------|--------------------------------------------------------------------|
+| `RATE_LIMIT`          | `120`   | Requests per minute per client IP, all endpoints except `/health`  |
+| `ONCHAIN_RATE_LIMIT`  | `5`     | Publish / anchor / re-anchor requests per IP per `ONCHAIN_RATE_WINDOW` |
+| `ONCHAIN_RATE_WINDOW` | `3600`  | Length of the on-chain window in seconds (must be at least 1)      |
+
+Invalid or negative values fall back to the default. Changes take effect after Render
+restarts the service.
+
 ### Important: Ephemeral Filesystem
 
 Render's free tier uses an **ephemeral filesystem**. The `cases/` folder where
@@ -110,14 +120,20 @@ When `PUBLIC_MODE=true`:
 
 All endpoints are open; there is no access code. Public mode adds:
 
-- Rate limiting: 120 requests/minute per client IP on every endpoint except `/health`
-- On-chain budget: 5 requests/hour per IP for `POST /report/publish` and
+- Rate limiting: `RATE_LIMIT` (default 120) requests/minute per client IP on every endpoint
+  except `/health`
+- On-chain budget: `ONCHAIN_RATE_LIMIT` (default 5) requests per `ONCHAIN_RATE_WINDOW`
+  (default 3600 s = 1 hour) per IP for `POST /report/publish` and
   `POST /cases/{case_number}/anchor|reanchor` (these spend Sepolia gas and Pinata storage)
 - Generic error messages (no stack traces exposed)
 - CORS restricted to `CORS_ORIGINS` value
 - Secrets never logged or returned in any response
 
-Limits return `429` with a `Retry-After` header.
+Limits return `429` with a `Retry-After` header (seconds until a slot frees up) and a JSON
+body with `scope` (`general` or `onchain`), `limit`, `window` and `retry_after`. CORS is the
+outermost middleware, so 429 and 500 responses carry the CORS headers and `Retry-After` is
+exposed to the browser; the frontend turns it into "Publishing limit reached (5 per hour).
+Try again in N minutes."
 
 ---
 

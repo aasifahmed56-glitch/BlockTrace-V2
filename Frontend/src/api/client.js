@@ -69,7 +69,48 @@ export const fetchContracts = async () => {
 };
 
 // Helper for formatting and displaying error messages
+// "5 per hour", "120 per minute", "10 per 2 hours"
+const describeLimit = (limit, windowSeconds) => {
+  const w = Number(windowSeconds);
+  let per;
+  if (w === 3600) per = 'hour';
+  else if (w === 60) per = 'minute';
+  else if (w % 3600 === 0) per = `${w / 3600} hours`;
+  else if (w % 60 === 0) per = `${w / 60} minutes`;
+  else per = `${w} seconds`;
+  return `${limit} per ${per}`;
+};
+
+const describeWait = (seconds) => {
+  const s = Math.max(1, Math.ceil(Number(seconds) || 0));
+  if (s < 60) return `${s} second${s === 1 ? '' : 's'}`;
+  const m = Math.ceil(s / 60);
+  return `${m} minute${m === 1 ? '' : 's'}`;
+};
+
+// A 429 from the rate limiter: say which limit was hit and when to retry (from the
+// Retry-After header, which the API exposes through CORS).
+const rateLimitMessage = (response) => {
+  const data = response.data || {};
+  const retryAfter = response.headers?.['retry-after'] ?? data.retry_after;
+  const wait = retryAfter ? ` Try again in ${describeWait(retryAfter)}.` : ' Please try again later.';
+  if (data.scope === 'onchain') {
+    return `Publishing limit reached (${describeLimit(data.limit ?? 5, data.window ?? 3600)}).${wait}`;
+  }
+  const limit = data.limit ? ` (${describeLimit(data.limit, data.window ?? 60)})` : '';
+  return `Too many requests${limit}.${wait}`;
+};
+
+export const NETWORK_ERROR_MESSAGE = 'Cannot reach the server; it may be waking up — try again in a minute.';
+
 export const getErrorMessage = (error) => {
+  if (error?.response?.status === 429) {
+    return rateLimitMessage(error.response);
+  }
+  // No response at all: offline, DNS, or the free backend still waking up
+  if (error && !error.response && (error.request || error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED')) {
+    return NETWORK_ERROR_MESSAGE;
+  }
   if (error?.response?.data?.detail) {
     if (typeof error.response.data.detail === 'string') {
       return error.response.data.detail;
